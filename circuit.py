@@ -161,6 +161,81 @@ class IC74574(Component):
                 net.drive(self._driver_ids[i], DriveState.HI_Z)
 
 
+class IC40193(Component):
+    """40193 - 4-bit presettable binary up/down counter.
+
+    CPU: count up on rising edge (CPD must be HIGH).
+    CPD: count down on rising edge (CPU must be HIGH).
+    PL (active low): asynchronous parallel load from D0-D3.
+    MR (active high): asynchronous master reset (outputs to 0).
+    TCU (active low): LOW when count is 15 and CPU is LOW.
+    TCD (active low): LOW when count is 0 and CPD is LOW.
+    """
+
+    def __init__(self, name, data_inputs, outputs, cpu_net, cpd_net,
+                 pl_net, mr_net, tcu_net, tcd_net):
+        self.name = name
+        self.data_inputs = data_inputs  # 4 nets
+        self.outputs = outputs  # 4 nets
+        self.cpu_net = cpu_net
+        self.cpd_net = cpd_net
+        self.pl_net = pl_net
+        self.mr_net = mr_net
+        self.tcu_net = tcu_net
+        self.tcd_net = tcd_net
+        self._count = 0
+        self._prev_cpu = Signal.LOW
+        self._prev_cpd = Signal.LOW
+        self._driver_ids = [f"{name}_Q{i}" for i in range(4)]
+        self._tcu_driver = f"{name}_TCU"
+        self._tcd_driver = f"{name}_TCD"
+
+    def pre_update(self):
+        mr = self.mr_net.resolve()
+        pl = self.pl_net.resolve()
+
+        if mr == Signal.HIGH:
+            self._count = 0
+        elif pl == Signal.LOW:
+            val = 0
+            for i in range(4):
+                if self.data_inputs[i].resolve() == Signal.HIGH:
+                    val |= (1 << i)
+            self._count = val
+        else:
+            cpu = self.cpu_net.resolve()
+            cpd = self.cpd_net.resolve()
+            if self._prev_cpu == Signal.LOW and cpu == Signal.HIGH and cpd == Signal.HIGH:
+                self._count = (self._count + 1) & 0xF
+            elif self._prev_cpd == Signal.LOW and cpd == Signal.HIGH and cpu == Signal.HIGH:
+                self._count = (self._count - 1) & 0xF
+            self._prev_cpu = cpu
+            self._prev_cpd = cpd
+
+    def update(self):
+        for i in range(4):
+            bit = (self._count >> i) & 1
+            self.outputs[i].drive(
+                self._driver_ids[i],
+                DriveState.HIGH if bit else DriveState.LOW
+            )
+
+        cpu = self.cpu_net.resolve()
+        cpd = self.cpd_net.resolve()
+
+        # TCU: LOW when count==15 and CPU is LOW
+        if self._count == 15 and cpu == Signal.LOW:
+            self.tcu_net.drive(self._tcu_driver, DriveState.LOW)
+        else:
+            self.tcu_net.drive(self._tcu_driver, DriveState.HIGH)
+
+        # TCD: LOW when count==0 and CPD is LOW
+        if self._count == 0 and cpd == Signal.LOW:
+            self.tcd_net.drive(self._tcd_driver, DriveState.LOW)
+        else:
+            self.tcd_net.drive(self._tcd_driver, DriveState.HIGH)
+
+
 class Circuit:
     def __init__(self):
         self.nets = {}

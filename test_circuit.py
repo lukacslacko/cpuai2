@@ -1,7 +1,7 @@
 import pytest
 from circuit import (
     Signal, DriveState, DoubleDriveError,
-    Net, Circuit, LED, Switch, IC74573, IC74574,
+    Net, Circuit, LED, Switch, IC74573, IC74574, IC40193,
 )
 
 
@@ -265,6 +265,184 @@ class TestIC74574:
         self.set_inputs(inputs, 0x00)
         c.settle()
         assert self.read_outputs(outputs) == 0x42
+
+
+# --- 40193 up/down counter tests ---
+
+class TestIC40193:
+    def make_counter(self):
+        c = Circuit()
+        data = [c.create_net(f"D{i}") for i in range(4)]
+        outputs = [c.create_net(f"Q{i}") for i in range(4)]
+        cpu = c.create_net("CPU")
+        cpd = c.create_net("CPD")
+        pl = c.create_net("PL")
+        mr = c.create_net("MR")
+        tcu = c.create_net("TCU")
+        tcd = c.create_net("TCD")
+        ctr = IC40193("CTR", data, outputs, cpu, cpd, pl, mr, tcu, tcd)
+        c.add_component(ctr)
+        # Default: no reset, no load, clocks low
+        mr.drive("test", DriveState.LOW)
+        pl.drive("test", DriveState.HIGH)
+        cpu.drive("test", DriveState.LOW)
+        cpd.drive("test", DriveState.LOW)
+        for i in range(4):
+            data[i].drive("test", DriveState.LOW)
+        c.settle()
+        return c, data, outputs, cpu, cpd, pl, mr, tcu, tcd, ctr
+
+    def read_outputs(self, outputs):
+        val = 0
+        for i in range(4):
+            if outputs[i].value == Signal.HIGH:
+                val |= (1 << i)
+        return val
+
+    def pulse_up(self, c, cpu):
+        cpu.drive("test", DriveState.HIGH)
+        c.settle()
+        cpu.drive("test", DriveState.LOW)
+        c.settle()
+
+    def pulse_down(self, c, cpd):
+        cpd.drive("test", DriveState.HIGH)
+        c.settle()
+        cpd.drive("test", DriveState.LOW)
+        c.settle()
+
+    def test_initial_state_zero(self):
+        c, data, outputs, cpu, cpd, pl, mr, tcu, tcd, ctr = self.make_counter()
+        assert self.read_outputs(outputs) == 0
+
+    def test_master_reset(self):
+        c, data, outputs, cpu, cpd, pl, mr, tcu, tcd, ctr = self.make_counter()
+        # Count up a few times
+        cpd.drive("test", DriveState.HIGH)
+        for _ in range(5):
+            self.pulse_up(c, cpu)
+        cpd.drive("test", DriveState.LOW)
+        assert self.read_outputs(outputs) == 5
+        # Reset
+        mr.drive("test", DriveState.HIGH)
+        c.settle()
+        assert self.read_outputs(outputs) == 0
+        mr.drive("test", DriveState.LOW)
+        c.settle()
+
+    def test_parallel_load(self):
+        c, data, outputs, cpu, cpd, pl, mr, tcu, tcd, ctr = self.make_counter()
+        # Set data inputs to 0xB (1011)
+        data[0].drive("test", DriveState.HIGH)
+        data[1].drive("test", DriveState.HIGH)
+        data[2].drive("test", DriveState.LOW)
+        data[3].drive("test", DriveState.HIGH)
+        # Load
+        pl.drive("test", DriveState.LOW)
+        c.settle()
+        assert self.read_outputs(outputs) == 0xB
+        pl.drive("test", DriveState.HIGH)
+        c.settle()
+
+    def test_count_up(self):
+        c, data, outputs, cpu, cpd, pl, mr, tcu, tcd, ctr = self.make_counter()
+        # CPD must be HIGH for count up
+        cpd.drive("test", DriveState.HIGH)
+        c.settle()
+        for expected in range(1, 16):
+            self.pulse_up(c, cpu)
+            assert self.read_outputs(outputs) == expected & 0xF
+
+    def test_count_up_wraps(self):
+        c, data, outputs, cpu, cpd, pl, mr, tcu, tcd, ctr = self.make_counter()
+        cpd.drive("test", DriveState.HIGH)
+        c.settle()
+        for _ in range(16):
+            self.pulse_up(c, cpu)
+        assert self.read_outputs(outputs) == 0  # wrapped around
+
+    def test_count_down(self):
+        c, data, outputs, cpu, cpd, pl, mr, tcu, tcd, ctr = self.make_counter()
+        # Load 5
+        for i in range(4):
+            data[i].drive("test", DriveState.HIGH if (5 >> i) & 1 else DriveState.LOW)
+        pl.drive("test", DriveState.LOW)
+        c.settle()
+        pl.drive("test", DriveState.HIGH)
+        c.settle()
+        assert self.read_outputs(outputs) == 5
+        # CPU must be HIGH for count down
+        cpu.drive("test", DriveState.HIGH)
+        c.settle()
+        for expected in [4, 3, 2, 1, 0]:
+            self.pulse_down(c, cpd)
+            assert self.read_outputs(outputs) == expected
+
+    def test_count_down_wraps(self):
+        c, data, outputs, cpu, cpd, pl, mr, tcu, tcd, ctr = self.make_counter()
+        cpu.drive("test", DriveState.HIGH)
+        c.settle()
+        self.pulse_down(c, cpd)
+        assert self.read_outputs(outputs) == 15  # 0 - 1 = 15
+
+    def test_tcu_carry(self):
+        c, data, outputs, cpu, cpd, pl, mr, tcu, tcd, ctr = self.make_counter()
+        # Load 14
+        for i in range(4):
+            data[i].drive("test", DriveState.HIGH if (14 >> i) & 1 else DriveState.LOW)
+        pl.drive("test", DriveState.LOW)
+        c.settle()
+        pl.drive("test", DriveState.HIGH)
+        c.settle()
+        # TCU should be HIGH (inactive) at count 14
+        assert tcu.value == Signal.HIGH
+        # Count to 15
+        cpd.drive("test", DriveState.HIGH)
+        cpu.drive("test", DriveState.HIGH)
+        c.settle()
+        cpu.drive("test", DriveState.LOW)
+        c.settle()
+        # Now at 15 with CPU LOW -> TCU should be LOW
+        assert self.read_outputs(outputs) == 15
+        assert tcu.value == Signal.LOW
+        # When CPU goes HIGH, TCU goes back HIGH
+        cpu.drive("test", DriveState.HIGH)
+        c.settle()
+        assert tcu.value == Signal.HIGH
+
+    def test_tcd_borrow(self):
+        c, data, outputs, cpu, cpd, pl, mr, tcu, tcd, ctr = self.make_counter()
+        # At count 0, TCD should be LOW when CPD is LOW
+        assert tcd.value == Signal.LOW  # count=0, CPD=LOW
+        # CPD goes HIGH -> TCD goes HIGH
+        cpd.drive("test", DriveState.HIGH)
+        c.settle()
+        assert tcd.value == Signal.HIGH
+        # Count up once so count=1
+        cpu.drive("test", DriveState.HIGH)
+        c.settle()
+        cpu.drive("test", DriveState.LOW)
+        c.settle()
+        # count=1, CPD LOW -> TCD should be HIGH (not zero)
+        cpd.drive("test", DriveState.LOW)
+        c.settle()
+        assert tcd.value == Signal.HIGH
+
+    def test_no_count_when_other_clock_low(self):
+        """CPU rising edge should not count if CPD is LOW."""
+        c, data, outputs, cpu, cpd, pl, mr, tcu, tcd, ctr = self.make_counter()
+        # CPD is LOW (default), try to count up
+        self.pulse_up(c, cpu)
+        assert self.read_outputs(outputs) == 0  # should not have counted
+
+    def test_reset_overrides_load(self):
+        c, data, outputs, cpu, cpd, pl, mr, tcu, tcd, ctr = self.make_counter()
+        for i in range(4):
+            data[i].drive("test", DriveState.HIGH)
+        pl.drive("test", DriveState.LOW)
+        mr.drive("test", DriveState.HIGH)
+        c.settle()
+        assert self.read_outputs(outputs) == 0  # reset wins
 
 
 # --- Integration test: switches -> FF1 -> FF2 -> LEDs ---
