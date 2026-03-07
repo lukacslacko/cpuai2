@@ -94,6 +94,23 @@ class Switch(Component):
         pass
 
 
+class Inverter(Component):
+    """Single inverter gate. Output is the logical inverse of input."""
+
+    def __init__(self, name, input_net, output_net):
+        self.name = name
+        self.input_net = input_net
+        self.output_net = output_net
+        self._driver_id = f"inv_{name}"
+
+    def update(self):
+        val = self.input_net.resolve()
+        if val == Signal.HIGH:
+            self.output_net.drive(self._driver_id, DriveState.LOW)
+        else:
+            self.output_net.drive(self._driver_id, DriveState.HIGH)
+
+
 class IC74573(Component):
     """74573 - 8-bit transparent latch.
 
@@ -234,6 +251,8 @@ class IC40193(Component):
     def pre_update(self):
         mr = self.mr_net.resolve()
         pl = self.pl_net.resolve()
+        cpu = self.cpu_net.resolve()
+        cpd = self.cpd_net.resolve()
 
         if mr == Signal.HIGH:
             self._count = 0
@@ -244,14 +263,13 @@ class IC40193(Component):
                     val |= (1 << i)
             self._count = val
         else:
-            cpu = self.cpu_net.resolve()
-            cpd = self.cpd_net.resolve()
             if self._prev_cpu == Signal.LOW and cpu == Signal.HIGH and cpd == Signal.HIGH:
                 self._count = (self._count + 1) & 0xF
             elif self._prev_cpd == Signal.LOW and cpd == Signal.HIGH and cpu == Signal.HIGH:
                 self._count = (self._count - 1) & 0xF
-            self._prev_cpu = cpu
-            self._prev_cpd = cpd
+
+        self._prev_cpu = cpu
+        self._prev_cpd = cpd
 
     def update(self):
         for i in range(4):
