@@ -161,6 +161,47 @@ class IC74574(Component):
                 net.drive(self._driver_ids[i], DriveState.HI_Z)
 
 
+class IC74138(Component):
+    """74138 - 3-to-8 line decoder/demultiplexer.
+
+    Select inputs: A, B, C (A is LSB).
+    Enable inputs: G1 (active high), G2A (active low), G2B (active low).
+    Outputs: Y0-Y7 (active low) - selected output is LOW, all others HIGH.
+    When disabled (G1 LOW or G2A HIGH or G2B HIGH), all outputs HIGH.
+    """
+
+    def __init__(self, name, a_net, b_net, c_net, g1_net, g2a_net, g2b_net, outputs):
+        self.name = name
+        self.a_net = a_net
+        self.b_net = b_net
+        self.c_net = c_net
+        self.g1_net = g1_net
+        self.g2a_net = g2a_net
+        self.g2b_net = g2b_net
+        self.outputs = outputs  # 8 nets
+        self._driver_ids = [f"{name}_Y{i}" for i in range(8)]
+
+    def update(self):
+        g1 = self.g1_net.resolve()
+        g2a = self.g2a_net.resolve()
+        g2b = self.g2b_net.resolve()
+        enabled = (g1 == Signal.HIGH and g2a == Signal.LOW and g2b == Signal.LOW)
+
+        if enabled:
+            a = 1 if self.a_net.resolve() == Signal.HIGH else 0
+            b = 1 if self.b_net.resolve() == Signal.HIGH else 0
+            c = 1 if self.c_net.resolve() == Signal.HIGH else 0
+            selected = a | (b << 1) | (c << 2)
+        else:
+            selected = -1
+
+        for i in range(8):
+            if i == selected:
+                self.outputs[i].drive(self._driver_ids[i], DriveState.LOW)
+            else:
+                self.outputs[i].drive(self._driver_ids[i], DriveState.HIGH)
+
+
 class IC40193(Component):
     """40193 - 4-bit presettable binary up/down counter.
 

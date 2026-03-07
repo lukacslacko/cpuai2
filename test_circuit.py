@@ -1,7 +1,7 @@
 import pytest
 from circuit import (
     Signal, DriveState, DoubleDriveError,
-    Net, Circuit, LED, Switch, IC74573, IC74574, IC40193,
+    Net, Circuit, LED, Switch, IC74573, IC74574, IC74138, IC40193,
 )
 
 
@@ -265,6 +265,85 @@ class TestIC74574:
         self.set_inputs(inputs, 0x00)
         c.settle()
         assert self.read_outputs(outputs) == 0x42
+
+
+# --- 74138 decoder/demux tests ---
+
+class TestIC74138:
+    def make_decoder(self):
+        c = Circuit()
+        a = c.create_net("A")
+        b = c.create_net("B")
+        cc = c.create_net("C")
+        g1 = c.create_net("G1")
+        g2a = c.create_net("G2A")
+        g2b = c.create_net("G2B")
+        outputs = [c.create_net(f"Y{i}") for i in range(8)]
+        dec = IC74138("U1", a, b, cc, g1, g2a, g2b, outputs)
+        c.add_component(dec)
+        # Default: enabled
+        g1.drive("test", DriveState.HIGH)
+        g2a.drive("test", DriveState.LOW)
+        g2b.drive("test", DriveState.LOW)
+        # Default: select 0
+        a.drive("test", DriveState.LOW)
+        b.drive("test", DriveState.LOW)
+        cc.drive("test", DriveState.LOW)
+        c.settle()
+        return c, a, b, cc, g1, g2a, g2b, outputs
+
+    def assert_selected(self, outputs, idx):
+        """Assert that only output[idx] is LOW (active), rest are HIGH."""
+        for i in range(8):
+            expected = Signal.LOW if i == idx else Signal.HIGH
+            assert outputs[i].value == expected, f"Y{i}: expected {expected}, got {outputs[i].value}"
+
+    def assert_all_high(self, outputs):
+        for i in range(8):
+            assert outputs[i].value == Signal.HIGH, f"Y{i} should be HIGH when disabled"
+
+    def test_select_each_output(self):
+        c, a, b, cc, g1, g2a, g2b, outputs = self.make_decoder()
+        for sel in range(8):
+            a.drive("test", DriveState.HIGH if sel & 1 else DriveState.LOW)
+            b.drive("test", DriveState.HIGH if sel & 2 else DriveState.LOW)
+            cc.drive("test", DriveState.HIGH if sel & 4 else DriveState.LOW)
+            c.settle()
+            self.assert_selected(outputs, sel)
+
+    def test_disabled_g1_low(self):
+        c, a, b, cc, g1, g2a, g2b, outputs = self.make_decoder()
+        g1.drive("test", DriveState.LOW)
+        c.settle()
+        self.assert_all_high(outputs)
+
+    def test_disabled_g2a_high(self):
+        c, a, b, cc, g1, g2a, g2b, outputs = self.make_decoder()
+        g2a.drive("test", DriveState.HIGH)
+        c.settle()
+        self.assert_all_high(outputs)
+
+    def test_disabled_g2b_high(self):
+        c, a, b, cc, g1, g2a, g2b, outputs = self.make_decoder()
+        g2b.drive("test", DriveState.HIGH)
+        c.settle()
+        self.assert_all_high(outputs)
+
+    def test_reenable_after_disable(self):
+        c, a, b, cc, g1, g2a, g2b, outputs = self.make_decoder()
+        a.drive("test", DriveState.HIGH)
+        b.drive("test", DriveState.LOW)
+        cc.drive("test", DriveState.HIGH)
+        c.settle()
+        self.assert_selected(outputs, 5)  # C=1, B=0, A=1 = 5
+        # Disable
+        g1.drive("test", DriveState.LOW)
+        c.settle()
+        self.assert_all_high(outputs)
+        # Re-enable
+        g1.drive("test", DriveState.HIGH)
+        c.settle()
+        self.assert_selected(outputs, 5)
 
 
 # --- 40193 up/down counter tests ---
