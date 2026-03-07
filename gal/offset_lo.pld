@@ -1,0 +1,71 @@
+Name     OFFSET_LO;
+PartNo   01;
+Date     2026-03-07;
+Revision 01;
+Designer cpuai2;
+Company  ;
+Assembly ;
+Location ;
+Device   g22v10;
+
+/* ============================================================ */
+/*  Address offset - low nibble adder (GAL_ADDLO)                */
+/*  Computes ADDR[0..3] = L[0..3] + effective_offset[0..3]      */
+/*  CTRL=00: passthrough    CTRL=01: add ARG                     */
+/*  CTRL=10: add ARG+1      CTRL=11: passthrough                 */
+/* ============================================================ */
+
+/* Input pins */
+PIN 2  = L0;
+PIN 3  = L1;
+PIN 4  = L2;
+PIN 5  = L3;
+PIN 6  = A0;
+PIN 7  = A1;
+PIN 8  = A2;
+PIN 9  = A3;
+PIN 10 = CTRL0;
+PIN 11 = CTRL1;
+
+/* Output pins */
+PIN 23 = ADDR0;  /*  8 product terms */
+PIN 22 = ADDR1;  /* 10 product terms */
+PIN 21 = ADDR2;  /* 12 product terms */
+PIN 20 = ADDR3;  /* 14 product terms */
+PIN 19 = C4;     /* 16 product terms */
+
+/* Addition active when CTRL = 01 or 10 (XOR of control bits) */
+ACTIVE = CTRL0 & !CTRL1 # !CTRL0 & CTRL1;
+
+/* Effective ARG (zeroed when not active) */
+EA0 = A0 & ACTIVE;
+EA1 = A1 & ACTIVE;
+EA2 = A2 & ACTIVE;
+EA3 = A3 & ACTIVE;
+
+/* Carry in: 1 only when CTRL = 10 */
+CIN = !CTRL0 & CTRL1;
+
+/* Full adder chain - bit 0 */
+ADDR0 = L0 $ EA0 $ CIN;
+G0 = L0 & EA0;
+P0 = L0 $ EA0;
+C0 = G0 # P0 & CIN;
+
+/* Full adder chain - bit 1 */
+ADDR1 = L1 $ EA1 $ C0;
+G1 = L1 & EA1;
+P1 = L1 $ EA1;
+C1 = G1 # P1 & C0;
+
+/* Full adder chain - bit 2 */
+ADDR2 = L2 $ EA2 $ C1;
+G2 = L2 & EA2;
+P2 = L2 $ EA2;
+C2 = G2 # P2 & C1;
+
+/* Full adder chain - bit 3 */
+ADDR3 = L3 $ EA3 $ C2;
+G3 = L3 & EA3;
+P3 = L3 $ EA3;
+C4 = G3 # P3 & C2;

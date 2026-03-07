@@ -1,0 +1,60 @@
+Name     OFFSET_H;
+PartNo   03;
+Date     2026-03-07;
+Revision 01;
+Designer cpuai2;
+Company  ;
+Assembly ;
+Location ;
+Device   g22v10;
+
+/* ============================================================ */
+/*  Address offset - high byte carry propagation (GAL_INCH)      */
+/*  Computes ADDR[8..15] = H[0..7] + CARRY8                     */
+/*  Simple 8-bit increment-by-carry chain                        */
+/* ============================================================ */
+
+/* Input pins */
+PIN 2  = H0;
+PIN 3  = H1;
+PIN 4  = H2;
+PIN 5  = H3;
+PIN 6  = H4;
+PIN 7  = H5;
+PIN 8  = H6;
+PIN 9  = H7;
+PIN 10 = C8IN;
+
+/* Output pins */
+PIN 23 = ADDR8;   /*  8 product terms */
+PIN 22 = ADDR9;   /* 10 product terms */
+PIN 21 = ADDR10;  /* 12 product terms */
+PIN 20 = ADDR11;  /* 14 product terms */
+PIN 19 = ADDR12;  /* 16 product terms */
+PIN 18 = ADDR13;  /* 16 product terms */
+PIN 17 = ADDR14;  /* 14 product terms */
+PIN 16 = ADDR15;  /* 12 product terms */
+
+/* Half adder chain (adding 0 or 1) */
+ADDR8  = H0 $ C8IN;
+CC8    = H0 & C8IN;
+
+ADDR9  = H1 $ CC8;
+CC9    = H1 & CC8;
+
+ADDR10 = H2 $ CC9;
+CC10   = H2 & CC9;
+
+ADDR11 = H3 $ CC10;
+CC11   = H3 & CC10;
+
+ADDR12 = H4 $ CC11;
+CC12   = H4 & CC11;
+
+ADDR13 = H5 $ CC12;
+CC13   = H5 & CC12;
+
+ADDR14 = H6 $ CC13;
+CC14   = H6 & CC13;
+
+ADDR15 = H7 $ CC14;

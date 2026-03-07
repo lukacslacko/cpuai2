@@ -1,0 +1,71 @@
+Name     OFFSET_HI;
+PartNo   02;
+Date     2026-03-07;
+Revision 01;
+Designer cpuai2;
+Company  ;
+Assembly ;
+Location ;
+Device   g22v10;
+
+/* ============================================================ */
+/*  Address offset - high nibble of low byte (GAL_ADDHI)         */
+/*  Computes ADDR[4..7] = L[4..7] + ARG[4..7] + CARRY4          */
+/*  Only adds when CTRL = 01 or 10; otherwise passthrough        */
+/* ============================================================ */
+
+/* Input pins */
+PIN 2  = L4;
+PIN 3  = L5;
+PIN 4  = L6;
+PIN 5  = L7;
+PIN 6  = A4;
+PIN 7  = A5;
+PIN 8  = A6;
+PIN 9  = A7;
+PIN 10 = CTRL0;
+PIN 11 = CTRL1;
+PIN 13 = C4IN;
+
+/* Output pins */
+PIN 23 = ADDR4;  /*  8 product terms */
+PIN 22 = ADDR5;  /* 10 product terms */
+PIN 21 = ADDR6;  /* 12 product terms */
+PIN 20 = ADDR7;  /* 14 product terms */
+PIN 19 = C8;     /* 16 product terms */
+
+/* Addition active when CTRL = 01 or 10 */
+ACTIVE = CTRL0 & !CTRL1 # !CTRL0 & CTRL1;
+
+/* Effective ARG (zeroed when not active) */
+EA4 = A4 & ACTIVE;
+EA5 = A5 & ACTIVE;
+EA6 = A6 & ACTIVE;
+EA7 = A7 & ACTIVE;
+
+/* Effective carry in (zeroed when not active) */
+ECIN = C4IN & ACTIVE;
+
+/* Full adder chain - bit 4 */
+ADDR4 = L4 $ EA4 $ ECIN;
+G4 = L4 & EA4;
+P4 = L4 $ EA4;
+CC4 = G4 # P4 & ECIN;
+
+/* Full adder chain - bit 5 */
+ADDR5 = L5 $ EA5 $ CC4;
+G5 = L5 & EA5;
+P5 = L5 $ EA5;
+CC5 = G5 # P5 & CC4;
+
+/* Full adder chain - bit 6 */
+ADDR6 = L6 $ EA6 $ CC5;
+G6 = L6 & EA6;
+P6 = L6 $ EA6;
+CC6 = G6 # P6 & CC5;
+
+/* Full adder chain - bit 7 */
+ADDR7 = L7 $ EA7 $ CC6;
+G7 = L7 & EA7;
+P7 = L7 $ EA7;
+C8 = G7 # P7 & CC6;

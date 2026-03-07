@@ -111,6 +111,31 @@ class Inverter(Component):
             self.output_net.drive(self._driver_id, DriveState.HIGH)
 
 
+class GAL22V10(Component):
+    """GAL22V10 PLD - combinational logic only (no registered outputs).
+
+    Emulated as a pure Python function mapping input signals to output signals.
+    The logic_fn receives a list of bools (one per input net) and must return
+    a list of bools (one per output net).
+    """
+
+    def __init__(self, name, inputs, outputs, logic_fn):
+        self.name = name
+        self.inputs = inputs
+        self.outputs = outputs
+        self.logic_fn = logic_fn
+        self._driver_ids = [f"{name}_O{i}" for i in range(len(outputs))]
+
+    def update(self):
+        in_vals = [net.resolve() == Signal.HIGH for net in self.inputs]
+        out_vals = self.logic_fn(in_vals)
+        for i, val in enumerate(out_vals):
+            self.outputs[i].drive(
+                self._driver_ids[i],
+                DriveState.HIGH if val else DriveState.LOW
+            )
+
+
 class IC74573(Component):
     """74573 - 8-bit transparent latch.
 

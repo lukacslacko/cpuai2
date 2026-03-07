@@ -1,7 +1,56 @@
 from circuit import (
     Signal, DriveState, Circuit, Net,
-    LED, IC74573, IC74574, IC74138, IC40193, IC62256, IC28256, Inverter,
+    LED, IC74573, IC74574, IC74138, IC40193, IC62256, IC28256,
+    Inverter, GAL22V10,
 )
+
+
+# === Address offset GAL logic functions ===
+# Three GAL22V10 chips compute: addr = H:L + offset
+# OFFSET_CTRL: 0=passthrough, 1=add ARG, 2=add ARG+1, 3=unused (passthrough)
+
+def _offset_lo_logic(inputs):
+    """GAL_ADDLO: low nibble of low byte addition.
+    Inputs [0..9]: L[0..3], ARG[0..3], CTRL[0..1]
+    Outputs [0..4]: ADDR[0..3], CARRY4
+    """
+    l_val = sum((1 if inputs[i] else 0) << i for i in range(4))
+    a_val = sum((1 if inputs[4 + i] else 0) << i for i in range(4))
+    ctrl = (1 if inputs[8] else 0) | ((1 if inputs[9] else 0) << 1)
+    if ctrl == 1:
+        result = l_val + a_val
+    elif ctrl == 2:
+        result = l_val + a_val + 1
+    else:
+        result = l_val
+    return [(result >> i) & 1 == 1 for i in range(4)] + [(result >> 4) & 1 == 1]
+
+
+def _offset_hi_logic(inputs):
+    """GAL_ADDHI: high nibble of low byte addition.
+    Inputs [0..10]: L[4..7], ARG[4..7], CTRL[0..1], CARRY4
+    Outputs [0..4]: ADDR[4..7], CARRY8
+    """
+    l_val = sum((1 if inputs[i] else 0) << i for i in range(4))
+    a_val = sum((1 if inputs[4 + i] else 0) << i for i in range(4))
+    ctrl = (1 if inputs[8] else 0) | ((1 if inputs[9] else 0) << 1)
+    c4 = 1 if inputs[10] else 0
+    if ctrl == 1 or ctrl == 2:
+        result = l_val + a_val + c4
+    else:
+        result = l_val
+    return [(result >> i) & 1 == 1 for i in range(4)] + [(result >> 4) & 1 == 1]
+
+
+def _offset_h_logic(inputs):
+    """GAL_INCH: high byte carry propagation.
+    Inputs [0..8]: H[0..7], CARRY8
+    Outputs [0..7]: ADDR[8..15]
+    """
+    h_val = sum((1 if inputs[i] else 0) << i for i in range(8))
+    c8 = 1 if inputs[8] else 0
+    result = (h_val + c8) & 0xFF
+    return [(result >> i) & 1 == 1 for i in range(8)]
 
 
 class CPU:
@@ -77,18 +126,73 @@ class CPU:
             self.a_out, self.b_out,
             self.latch_out[1], gnd))
 
-        # === Address bus (H and L registers) ===
-        self.addr_bus = [c.create_net(f"ADDR{i}") for i in range(16)]
+        # === H and L registers (output to internal nets, not addr bus directly) ===
+        self.h_out = [c.create_net(f"H_OUT{i}") for i in range(8)]
+        self.l_out = [c.create_net(f"L_OUT{i}") for i in range(8)]
 
-        # H register: latches on LATCH[2], always outputs to addr[8..15]
+        # H register: latches on LATCH[2], always outputs to h_out
         self.h_reg = c.add_component(IC74574("H",
-            self.data_bus, self.addr_bus[8:16],
+            self.data_bus, self.h_out,
             self.latch_out[2], gnd))
 
-        # L register: latches on LATCH[3], always outputs to addr[0..7]
+        # L register: latches on LATCH[3], always outputs to l_out
         self.l_reg = c.add_component(IC74574("L",
-            self.data_bus, self.addr_bus[0:8],
+            self.data_bus, self.l_out,
             self.latch_out[3], gnd))
+
+        # === I register (instruction) ===
+        # Latches from data bus on ILATCH, always outputs to i_out
+        self.ilatch = c.create_net("ILATCH")
+        self.ilatch.drive("ctrl", DriveState.LOW)  # idle low
+
+        self.i_out = [c.create_net(f"I_OUT{i}") for i in range(8)]
+        self.i_reg = c.add_component(IC74574("I",
+            self.data_bus, self.i_out,
+            self.ilatch, gnd))
+
+        # === ARG register ===
+        # Latches from I's outputs on ILATCH, always outputs to arg_out
+        self.arg_out = [c.create_net(f"ARG_OUT{i}") for i in range(8)]
+        self.arg_reg = c.add_component(IC74574("ARG",
+            self.i_out, self.arg_out,
+            self.ilatch, gnd))
+
+        # ARG_DATA buffer: arg_out -> data bus, OE=ASSERT[7]
+        c.add_component(IC74573("ARG_DATA",
+            self.arg_out, self.data_bus, vcc, self.assert_out[7]))
+
+        # ARG_ADDR buffer: arg_out -> offset GAL inputs, always on
+        self.arg_addr_out = [c.create_net(f"ARG_ADDR{i}") for i in range(8)]
+        c.add_component(IC74573("ARG_ADDR",
+            self.arg_out, self.arg_addr_out, vcc, gnd))
+
+        # === Address offset logic (3x GAL22V10) ===
+        # OFFSET_CTRL: 0=passthrough, 1=add ARG, 2=add ARG+1
+        self.offset_ctrl = [c.create_net(f"OFFSET_CTRL{i}") for i in range(2)]
+        self.offset_ctrl[0].drive("ctrl", DriveState.LOW)
+        self.offset_ctrl[1].drive("ctrl", DriveState.LOW)
+
+        self.addr_bus = [c.create_net(f"ADDR{i}") for i in range(16)]
+        carry4 = c.create_net("OFFSET_C4")
+        carry8 = c.create_net("OFFSET_C8")
+
+        # GAL_ADDLO: L[0..3] + ARG[0..3] + CTRL -> ADDR[0..3] + CARRY4
+        c.add_component(GAL22V10("GAL_ADDLO",
+            self.l_out[0:4] + self.arg_addr_out[0:4] + self.offset_ctrl,
+            self.addr_bus[0:4] + [carry4],
+            _offset_lo_logic))
+
+        # GAL_ADDHI: L[4..7] + ARG[4..7] + CTRL + CARRY4 -> ADDR[4..7] + CARRY8
+        c.add_component(GAL22V10("GAL_ADDHI",
+            self.l_out[4:8] + self.arg_addr_out[4:8] + self.offset_ctrl + [carry4],
+            self.addr_bus[4:8] + [carry8],
+            _offset_hi_logic))
+
+        # GAL_INCH: H[0..7] + CARRY8 -> ADDR[8..15]
+        c.add_component(GAL22V10("GAL_INCH",
+            self.h_out + [carry8],
+            self.addr_bus[8:16],
+            _offset_h_logic))
 
         # === RAM (lower 32K) and ROM (upper 32K) ===
         # RAM CE = addr[15] (active low: enabled when A15=0)
@@ -195,22 +299,6 @@ class CPU:
         c.add_component(IC74573("SPL_BUF",
             self.sp_l_int, self.data_bus, vcc, self.assert_out[6]))
 
-        # === I register (instruction) ===
-        # Latches from data bus on ILATCH, always outputs to i_out
-        self.ilatch = c.create_net("ILATCH")
-        self.ilatch.drive("ctrl", DriveState.LOW)  # idle low
-
-        self.i_out = [c.create_net(f"I_OUT{i}") for i in range(8)]
-        self.i_reg = c.add_component(IC74574("I",
-            self.data_bus, self.i_out,
-            self.ilatch, gnd))
-
-        # === ARG register ===
-        # Latches from I's outputs on ILATCH, asserts data bus on ASSERT[7]
-        self.arg_reg = c.add_component(IC74574("ARG",
-            self.i_out, self.data_bus,
-            self.ilatch, self.assert_out[7]))
-
         # === Initialization: reset counters, then settle ===
         c.settle()
         self.pc_mr.drive("ctrl", DriveState.LOW)
@@ -257,3 +345,18 @@ class CPU:
 
     def read_i(self):
         return self._read_nets(self.i_out)
+
+    def read_arg(self):
+        return self._read_nets(self.arg_out)
+
+    def set_offset_ctrl(self, mode):
+        """Set offset mode: 0=passthrough, 1=ARG, 2=ARG+1."""
+        self.offset_ctrl[0].drive("ctrl",
+            DriveState.HIGH if mode & 1 else DriveState.LOW)
+        self.offset_ctrl[1].drive("ctrl",
+            DriveState.HIGH if mode & 2 else DriveState.LOW)
+
+    def _force_register(self, reg_574, value):
+        """Force a '574 register's latched value. For testing only."""
+        for i in range(len(reg_574._latched)):
+            reg_574._latched[i] = Signal.HIGH if (value >> i) & 1 else Signal.LOW
