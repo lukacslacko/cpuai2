@@ -277,6 +277,111 @@ class IC40193(Component):
             self.tcd_net.drive(self._tcd_driver, DriveState.HIGH)
 
 
+class IC62256(Component):
+    """62256 - 32KB static RAM.
+
+    15 address lines (A0-A14), 8 bidirectional data lines (D0-D7).
+    CE (active low): chip enable.
+    OE (active low): output enable (drives data bus on read).
+    WE (active low): write enable (latches data bus into memory).
+    Read: CE=LOW, OE=LOW, WE=HIGH -> data driven onto bus.
+    Write: CE=LOW, WE=LOW -> data read from bus into memory.
+    """
+
+    def __init__(self, name, address_lines, data_lines, ce_net, oe_net, we_net):
+        self.name = name
+        self.address_lines = address_lines  # 15 nets
+        self.data_lines = data_lines  # 8 nets (bidirectional)
+        self.ce_net = ce_net
+        self.oe_net = oe_net
+        self.we_net = we_net
+        self._memory = bytearray(32768)
+        self._driver_ids = [f"{name}_D{i}" for i in range(8)]
+
+    def _read_address(self):
+        addr = 0
+        for i in range(15):
+            if self.address_lines[i].resolve() == Signal.HIGH:
+                addr |= (1 << i)
+        return addr
+
+    def pre_update(self):
+        ce = self.ce_net.resolve()
+        we = self.we_net.resolve()
+        if ce == Signal.LOW and we == Signal.LOW:
+            addr = self._read_address()
+            val = 0
+            for i in range(8):
+                if self.data_lines[i].resolve() == Signal.HIGH:
+                    val |= (1 << i)
+            self._memory[addr] = val
+
+    def update(self):
+        ce = self.ce_net.resolve()
+        oe = self.oe_net.resolve()
+        we = self.we_net.resolve()
+        if ce == Signal.LOW and oe == Signal.LOW and we == Signal.HIGH:
+            addr = self._read_address()
+            val = self._memory[addr]
+            for i in range(8):
+                bit = (val >> i) & 1
+                self.data_lines[i].drive(
+                    self._driver_ids[i],
+                    DriveState.HIGH if bit else DriveState.LOW
+                )
+        else:
+            for i in range(8):
+                self.data_lines[i].drive(self._driver_ids[i], DriveState.HI_Z)
+
+
+class IC28256(Component):
+    """28256 - 32KB EEPROM (modeled as ROM).
+
+    15 address lines (A0-A14), 8 data output lines (D0-D7).
+    CE (active low): chip enable.
+    OE (active low): output enable.
+    Content is set via Python (load method), no write pins.
+    Read: CE=LOW, OE=LOW -> data driven onto bus.
+    """
+
+    def __init__(self, name, address_lines, data_lines, ce_net, oe_net):
+        self.name = name
+        self.address_lines = address_lines  # 15 nets
+        self.data_lines = data_lines  # 8 nets
+        self.ce_net = ce_net
+        self.oe_net = oe_net
+        self._memory = bytearray(32768)
+        self._driver_ids = [f"{name}_D{i}" for i in range(8)]
+
+    def load(self, address, data):
+        """Load data into ROM starting at address. data can be bytes or list of ints."""
+        for i, byte in enumerate(data):
+            self._memory[address + i] = byte
+
+    def _read_address(self):
+        addr = 0
+        for i in range(15):
+            if self.address_lines[i].resolve() == Signal.HIGH:
+                addr |= (1 << i)
+        return addr
+
+    def update(self):
+        ce = self.ce_net.resolve()
+        oe = self.oe_net.resolve()
+        if ce == Signal.LOW and oe == Signal.LOW:
+            addr = self._read_address()
+            val = self._memory[addr]
+            for i in range(8):
+                bit = (val >> i) & 1
+                self.data_lines[i].drive(
+                    self._driver_ids[i],
+                    DriveState.HIGH if bit else DriveState.LOW
+                )
+        else:
+            for i in range(8):
+                self.data_lines[i].drive(self._driver_ids[i], DriveState.HI_Z)
+
+
 class Circuit:
     def __init__(self):
         self.nets = {}

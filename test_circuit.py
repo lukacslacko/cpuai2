@@ -2,6 +2,7 @@ import pytest
 from circuit import (
     Signal, DriveState, DoubleDriveError,
     Net, Circuit, LED, Switch, IC74573, IC74574, IC74138, IC40193,
+    IC62256, IC28256,
 )
 
 
@@ -344,6 +345,230 @@ class TestIC74138:
         g1.drive("test", DriveState.HIGH)
         c.settle()
         self.assert_selected(outputs, 5)
+
+
+# --- 62256 RAM tests ---
+
+class TestIC62256:
+    def make_ram(self):
+        c = Circuit()
+        addr = [c.create_net(f"A{i}") for i in range(15)]
+        data = [c.create_net(f"D{i}") for i in range(8)]
+        ce = c.create_net("CE")
+        oe = c.create_net("OE")
+        we = c.create_net("WE")
+        ram = IC62256("RAM", addr, data, ce, oe, we)
+        c.add_component(ram)
+        # Default: disabled, no write
+        ce.drive("test", DriveState.HIGH)
+        oe.drive("test", DriveState.HIGH)
+        we.drive("test", DriveState.HIGH)
+        for i in range(15):
+            addr[i].drive("test", DriveState.LOW)
+        c.settle()
+        return c, addr, data, ce, oe, we, ram
+
+    def set_address(self, addr_nets, address):
+        for i in range(15):
+            addr_nets[i].drive("test", DriveState.HIGH if (address >> i) & 1 else DriveState.LOW)
+
+    def drive_data(self, data_nets, value):
+        for i in range(8):
+            data_nets[i].drive("ext", DriveState.HIGH if (value >> i) & 1 else DriveState.LOW)
+
+    def release_data(self, data_nets):
+        for i in range(8):
+            data_nets[i].drive("ext", DriveState.HI_Z)
+
+    def read_data(self, data_nets):
+        val = 0
+        for i in range(8):
+            if data_nets[i].value == Signal.HIGH:
+                val |= (1 << i)
+        return val
+
+    def test_data_hi_z_when_disabled(self):
+        c, addr, data, ce, oe, we, ram = self.make_ram()
+        for i in range(8):
+            assert data[i].value == Signal.FLOATING
+
+    def test_write_then_read(self):
+        c, addr, data, ce, oe, we, ram = self.make_ram()
+        # Write 0xAB to address 0x100
+        self.set_address(addr, 0x100)
+        self.drive_data(data, 0xAB)
+        ce.drive("test", DriveState.LOW)
+        we.drive("test", DriveState.LOW)
+        c.settle()
+        we.drive("test", DriveState.HIGH)
+        c.settle()
+        # Release data bus and read back
+        self.release_data(data)
+        oe.drive("test", DriveState.LOW)
+        c.settle()
+        assert self.read_data(data) == 0xAB
+
+    def test_different_addresses(self):
+        c, addr, data, ce, oe, we, ram = self.make_ram()
+        ce.drive("test", DriveState.LOW)
+        # Write 0x42 to address 0
+        self.set_address(addr, 0)
+        self.drive_data(data, 0x42)
+        we.drive("test", DriveState.LOW)
+        c.settle()
+        we.drive("test", DriveState.HIGH)
+        c.settle()
+        # Write 0xFF to address 1
+        self.set_address(addr, 1)
+        self.drive_data(data, 0xFF)
+        we.drive("test", DriveState.LOW)
+        c.settle()
+        we.drive("test", DriveState.HIGH)
+        c.settle()
+        # Read back both
+        self.release_data(data)
+        oe.drive("test", DriveState.LOW)
+        self.set_address(addr, 0)
+        c.settle()
+        assert self.read_data(data) == 0x42
+        self.set_address(addr, 1)
+        c.settle()
+        assert self.read_data(data) == 0xFF
+
+    def test_hi_z_during_write(self):
+        c, addr, data, ce, oe, we, ram = self.make_ram()
+        self.drive_data(data, 0x55)
+        ce.drive("test", DriveState.LOW)
+        we.drive("test", DriveState.LOW)
+        c.settle()
+        # RAM should not be driving data bus during write
+        # (external driver is driving, RAM is reading — no conflict)
+        assert self.read_data(data) == 0x55
+
+    def test_overwrite(self):
+        c, addr, data, ce, oe, we, ram = self.make_ram()
+        ce.drive("test", DriveState.LOW)
+        self.set_address(addr, 0x50)
+        # Write first value
+        self.drive_data(data, 0x11)
+        we.drive("test", DriveState.LOW)
+        c.settle()
+        we.drive("test", DriveState.HIGH)
+        c.settle()
+        # Overwrite
+        self.drive_data(data, 0x22)
+        we.drive("test", DriveState.LOW)
+        c.settle()
+        we.drive("test", DriveState.HIGH)
+        c.settle()
+        # Read back
+        self.release_data(data)
+        oe.drive("test", DriveState.LOW)
+        c.settle()
+        assert self.read_data(data) == 0x22
+
+    def test_max_address(self):
+        c, addr, data, ce, oe, we, ram = self.make_ram()
+        ce.drive("test", DriveState.LOW)
+        self.set_address(addr, 0x7FFF)
+        self.drive_data(data, 0xDE)
+        we.drive("test", DriveState.LOW)
+        c.settle()
+        we.drive("test", DriveState.HIGH)
+        c.settle()
+        self.release_data(data)
+        oe.drive("test", DriveState.LOW)
+        c.settle()
+        assert self.read_data(data) == 0xDE
+
+
+# --- 28256 ROM tests ---
+
+class TestIC28256:
+    def make_rom(self):
+        c = Circuit()
+        addr = [c.create_net(f"A{i}") for i in range(15)]
+        data = [c.create_net(f"D{i}") for i in range(8)]
+        ce = c.create_net("CE")
+        oe = c.create_net("OE")
+        rom = IC28256("ROM", addr, data, ce, oe)
+        c.add_component(rom)
+        ce.drive("test", DriveState.HIGH)
+        oe.drive("test", DriveState.HIGH)
+        for i in range(15):
+            addr[i].drive("test", DriveState.LOW)
+        c.settle()
+        return c, addr, data, ce, oe, rom
+
+    def set_address(self, addr_nets, address):
+        for i in range(15):
+            addr_nets[i].drive("test", DriveState.HIGH if (address >> i) & 1 else DriveState.LOW)
+
+    def read_data(self, data_nets):
+        val = 0
+        for i in range(8):
+            if data_nets[i].value == Signal.HIGH:
+                val |= (1 << i)
+        return val
+
+    def test_data_hi_z_when_disabled(self):
+        c, addr, data, ce, oe, rom = self.make_rom()
+        for i in range(8):
+            assert data[i].value == Signal.FLOATING
+
+    def test_load_and_read_single_byte(self):
+        c, addr, data, ce, oe, rom = self.make_rom()
+        rom.load(0x00, [0xCA])
+        ce.drive("test", DriveState.LOW)
+        oe.drive("test", DriveState.LOW)
+        c.settle()
+        assert self.read_data(data) == 0xCA
+
+    def test_load_and_read_multiple_bytes(self):
+        c, addr, data, ce, oe, rom = self.make_rom()
+        rom.load(0x100, [0xDE, 0xAD, 0xBE, 0xEF])
+        ce.drive("test", DriveState.LOW)
+        oe.drive("test", DriveState.LOW)
+        for i, expected in enumerate([0xDE, 0xAD, 0xBE, 0xEF]):
+            self.set_address(addr, 0x100 + i)
+            c.settle()
+            assert self.read_data(data) == expected
+
+    def test_load_bytes_object(self):
+        c, addr, data, ce, oe, rom = self.make_rom()
+        rom.load(0x00, b"\x55\xAA")
+        ce.drive("test", DriveState.LOW)
+        oe.drive("test", DriveState.LOW)
+        self.set_address(addr, 0)
+        c.settle()
+        assert self.read_data(data) == 0x55
+        self.set_address(addr, 1)
+        c.settle()
+        assert self.read_data(data) == 0xAA
+
+    def test_unloaded_reads_zero(self):
+        c, addr, data, ce, oe, rom = self.make_rom()
+        ce.drive("test", DriveState.LOW)
+        oe.drive("test", DriveState.LOW)
+        self.set_address(addr, 0x2000)
+        c.settle()
+        assert self.read_data(data) == 0x00
+
+    def test_hi_z_when_ce_high(self):
+        c, addr, data, ce, oe, rom = self.make_rom()
+        rom.load(0x00, [0xFF])
+        oe.drive("test", DriveState.LOW)
+        c.settle()
+        for i in range(8):
+            assert data[i].value == Signal.FLOATING
+
+    def test_hi_z_when_oe_high(self):
+        c, addr, data, ce, oe, rom = self.make_rom()
+        rom.load(0x00, [0xFF])
+        ce.drive("test", DriveState.LOW)
+        c.settle()
+        for i in range(8):
+            assert data[i].value == Signal.FLOATING
 
 
 # --- 40193 up/down counter tests ---
