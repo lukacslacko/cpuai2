@@ -1,56 +1,17 @@
+import os
+
 from circuit import (
     Signal, DriveState, Circuit, Net,
     LED, IC74573, IC74574, IC74138, IC40193, IC62256, IC28256,
     Inverter, GAL22V10,
 )
 
-
-# === Address offset GAL logic functions ===
-# Three GAL22V10 chips compute: addr = H:L + offset
-# OFFSET_CTRL: 0=passthrough, 1=add ARG, 2=add ARG+1, 3=unused (passthrough)
-
-def _offset_lo_logic(inputs):
-    """GAL_ADDLO: low nibble of low byte addition.
-    Inputs [0..9]: L[0..3], ARG[0..3], CTRL[0..1]
-    Outputs [0..4]: ADDR[0..3], CARRY4
-    """
-    l_val = sum((1 if inputs[i] else 0) << i for i in range(4))
-    a_val = sum((1 if inputs[4 + i] else 0) << i for i in range(4))
-    ctrl = (1 if inputs[8] else 0) | ((1 if inputs[9] else 0) << 1)
-    if ctrl == 1:
-        result = l_val + a_val
-    elif ctrl == 2:
-        result = l_val + a_val + 1
-    else:
-        result = l_val
-    return [(result >> i) & 1 == 1 for i in range(4)] + [(result >> 4) & 1 == 1]
+_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def _offset_hi_logic(inputs):
-    """GAL_ADDHI: high nibble of low byte addition.
-    Inputs [0..10]: L[4..7], ARG[4..7], CTRL[0..1], CARRY4
-    Outputs [0..4]: ADDR[4..7], CARRY8
-    """
-    l_val = sum((1 if inputs[i] else 0) << i for i in range(4))
-    a_val = sum((1 if inputs[4 + i] else 0) << i for i in range(4))
-    ctrl = (1 if inputs[8] else 0) | ((1 if inputs[9] else 0) << 1)
-    c4 = 1 if inputs[10] else 0
-    if ctrl == 1 or ctrl == 2:
-        result = l_val + a_val + c4
-    else:
-        result = l_val
-    return [(result >> i) & 1 == 1 for i in range(4)] + [(result >> 4) & 1 == 1]
-
-
-def _offset_h_logic(inputs):
-    """GAL_INCH: high byte carry propagation.
-    Inputs [0..8]: H[0..7], CARRY8
-    Outputs [0..7]: ADDR[8..15]
-    """
-    h_val = sum((1 if inputs[i] else 0) << i for i in range(8))
-    c8 = 1 if inputs[8] else 0
-    result = (h_val + c8) & 0xFF
-    return [(result >> i) & 1 == 1 for i in range(8)]
+def _load_pld(filename):
+    with open(os.path.join(_DIR, "gal", filename)) as f:
+        return f.read()
 
 
 class CPU:
@@ -178,21 +139,44 @@ class CPU:
 
         # GAL_ADDLO: L[0..3] + ARG[0..3] + CTRL -> ADDR[0..3] + CARRY4
         c.add_component(GAL22V10("GAL_ADDLO",
-            self.l_out[0:4] + self.arg_addr_out[0:4] + self.offset_ctrl,
-            self.addr_bus[0:4] + [carry4],
-            _offset_lo_logic))
+            _load_pld("offset_lo.pld"), {
+                "L0": self.l_out[0], "L1": self.l_out[1],
+                "L2": self.l_out[2], "L3": self.l_out[3],
+                "A0": self.arg_addr_out[0], "A1": self.arg_addr_out[1],
+                "A2": self.arg_addr_out[2], "A3": self.arg_addr_out[3],
+                "CTRL0": self.offset_ctrl[0], "CTRL1": self.offset_ctrl[1],
+                "ADDR0": self.addr_bus[0], "ADDR1": self.addr_bus[1],
+                "ADDR2": self.addr_bus[2], "ADDR3": self.addr_bus[3],
+                "C4": carry4,
+            }))
 
         # GAL_ADDHI: L[4..7] + ARG[4..7] + CTRL + CARRY4 -> ADDR[4..7] + CARRY8
         c.add_component(GAL22V10("GAL_ADDHI",
-            self.l_out[4:8] + self.arg_addr_out[4:8] + self.offset_ctrl + [carry4],
-            self.addr_bus[4:8] + [carry8],
-            _offset_hi_logic))
+            _load_pld("offset_hi.pld"), {
+                "L4": self.l_out[4], "L5": self.l_out[5],
+                "L6": self.l_out[6], "L7": self.l_out[7],
+                "A4": self.arg_addr_out[4], "A5": self.arg_addr_out[5],
+                "A6": self.arg_addr_out[6], "A7": self.arg_addr_out[7],
+                "CTRL0": self.offset_ctrl[0], "CTRL1": self.offset_ctrl[1],
+                "C4IN": carry4,
+                "ADDR4": self.addr_bus[4], "ADDR5": self.addr_bus[5],
+                "ADDR6": self.addr_bus[6], "ADDR7": self.addr_bus[7],
+                "C8": carry8,
+            }))
 
         # GAL_INCH: H[0..7] + CARRY8 -> ADDR[8..15]
         c.add_component(GAL22V10("GAL_INCH",
-            self.h_out + [carry8],
-            self.addr_bus[8:16],
-            _offset_h_logic))
+            _load_pld("offset_h.pld"), {
+                "H0": self.h_out[0], "H1": self.h_out[1],
+                "H2": self.h_out[2], "H3": self.h_out[3],
+                "H4": self.h_out[4], "H5": self.h_out[5],
+                "H6": self.h_out[6], "H7": self.h_out[7],
+                "C8IN": carry8,
+                "ADDR8": self.addr_bus[8], "ADDR9": self.addr_bus[9],
+                "ADDR10": self.addr_bus[10], "ADDR11": self.addr_bus[11],
+                "ADDR12": self.addr_bus[12], "ADDR13": self.addr_bus[13],
+                "ADDR14": self.addr_bus[14], "ADDR15": self.addr_bus[15],
+            }))
 
         # === RAM (lower 32K) and ROM (upper 32K) ===
         # RAM CE = addr[15] (active low: enabled when A15=0)

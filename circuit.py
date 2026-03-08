@@ -111,27 +111,177 @@ class Inverter(Component):
             self.output_net.drive(self._driver_id, DriveState.HIGH)
 
 
+class PldProgram:
+    """Parser and evaluator for WinCUPL PLD source code (combinational only)."""
+
+    _HEADER_KEYWORDS = {
+        'NAME', 'PARTNO', 'DATE', 'REVISION', 'DESIGNER',
+        'COMPANY', 'ASSEMBLY', 'LOCATION', 'DEVICE',
+    }
+
+    def __init__(self, source):
+        self.pins = {}        # pin_number -> name
+        self.equations = {}   # name -> AST node
+        self._parse(source)
+
+    def _parse(self, source):
+        import re
+        # Strip block comments
+        source = re.sub(r'/\*.*?\*/', '', source, flags=re.DOTALL)
+        for stmt in source.split(';'):
+            stmt = stmt.strip()
+            if not stmt:
+                continue
+            # PIN declaration: PIN 2 = L0
+            m = re.match(r'PIN\s+(\d+)\s*=\s*(\w+)', stmt, re.I)
+            if m:
+                self.pins[int(m.group(1))] = m.group(2)
+                continue
+            # Skip header keywords (Name OFFSET_LO, Device g22v10, etc.)
+            first_word = stmt.split()[0].upper() if stmt.split() else ''
+            if first_word in self._HEADER_KEYWORDS:
+                continue
+            # Equation: NAME = expr
+            if '=' in stmt:
+                lhs, rhs = stmt.split('=', 1)
+                name = lhs.strip()
+                if name:
+                    self.equations[name] = self._parse_expr(rhs.strip())
+
+    # --- Tokenizer ---
+    def _tokenize(self, s):
+        tokens = []
+        i = 0
+        while i < len(s):
+            if s[i].isspace():
+                i += 1
+            elif s[i] in '&#$!()':
+                tokens.append(s[i])
+                i += 1
+            elif s[i].isalnum() or s[i] == '_':
+                j = i
+                while j < len(s) and (s[j].isalnum() or s[j] == '_'):
+                    j += 1
+                tokens.append(s[i:j])
+                i = j
+            else:
+                i += 1
+        return tokens
+
+    # --- Recursive descent parser ---
+    # Precedence (low to high): # (OR), $ (XOR), & (AND), ! (NOT)
+    def _parse_expr(self, expr_str):
+        tokens = self._tokenize(expr_str)
+        pos = [0]
+        result = self._parse_or(tokens, pos)
+        return result
+
+    def _parse_or(self, tokens, pos):
+        left = self._parse_xor(tokens, pos)
+        while pos[0] < len(tokens) and tokens[pos[0]] == '#':
+            pos[0] += 1
+            right = self._parse_xor(tokens, pos)
+            left = ('or', left, right)
+        return left
+
+    def _parse_xor(self, tokens, pos):
+        left = self._parse_and(tokens, pos)
+        while pos[0] < len(tokens) and tokens[pos[0]] == '$':
+            pos[0] += 1
+            right = self._parse_and(tokens, pos)
+            left = ('xor', left, right)
+        return left
+
+    def _parse_and(self, tokens, pos):
+        left = self._parse_not(tokens, pos)
+        while pos[0] < len(tokens) and tokens[pos[0]] == '&':
+            pos[0] += 1
+            right = self._parse_not(tokens, pos)
+            left = ('and', left, right)
+        return left
+
+    def _parse_not(self, tokens, pos):
+        if pos[0] < len(tokens) and tokens[pos[0]] == '!':
+            pos[0] += 1
+            operand = self._parse_not(tokens, pos)
+            return ('not', operand)
+        return self._parse_atom(tokens, pos)
+
+    def _parse_atom(self, tokens, pos):
+        if pos[0] < len(tokens) and tokens[pos[0]] == '(':
+            pos[0] += 1
+            result = self._parse_or(tokens, pos)
+            if pos[0] < len(tokens) and tokens[pos[0]] == ')':
+                pos[0] += 1
+            return result
+        if pos[0] < len(tokens):
+            name = tokens[pos[0]]
+            pos[0] += 1
+            return ('var', name)
+        return ('var', '_ZERO')
+
+    # --- Evaluator ---
+    def evaluate(self, name, env):
+        """Evaluate a variable by name, resolving intermediate equations as needed."""
+        if name in env:
+            return env[name]
+        if name in self.equations:
+            result = self._eval_node(self.equations[name], env)
+            env[name] = result
+            return result
+        return False
+
+    def _eval_node(self, node, env):
+        op = node[0]
+        if op == 'var':
+            return self.evaluate(node[1], env)
+        elif op == 'not':
+            return not self._eval_node(node[1], env)
+        elif op == 'and':
+            return self._eval_node(node[1], env) and self._eval_node(node[2], env)
+        elif op == 'or':
+            return self._eval_node(node[1], env) or self._eval_node(node[2], env)
+        elif op == 'xor':
+            return self._eval_node(node[1], env) != self._eval_node(node[2], env)
+        return False
+
+    def get_output_names(self):
+        """Pin names that have equations (outputs)."""
+        pin_names = set(self.pins.values())
+        return [n for n in pin_names if n in self.equations]
+
+    def get_input_names(self):
+        """Pin names without equations (inputs)."""
+        pin_names = set(self.pins.values())
+        return [n for n in pin_names if n not in self.equations]
+
+
 class GAL22V10(Component):
     """GAL22V10 PLD - combinational logic only (no registered outputs).
 
-    Emulated as a pure Python function mapping input signals to output signals.
-    The logic_fn receives a list of bools (one per input net) and must return
-    a list of bools (one per output net).
+    Takes WinCUPL PLD source code and a pin_map dict mapping PLD pin names
+    to Net objects. The PLD equations are parsed and evaluated each cycle.
     """
 
-    def __init__(self, name, inputs, outputs, logic_fn):
+    def __init__(self, name, pld_source, pin_map):
         self.name = name
-        self.inputs = inputs
-        self.outputs = outputs
-        self.logic_fn = logic_fn
-        self._driver_ids = [f"{name}_O{i}" for i in range(len(outputs))]
+        self._program = PldProgram(pld_source)
+        self._pin_map = pin_map
+        self._input_names = self._program.get_input_names()
+        self._output_names = self._program.get_output_names()
+        self._driver_ids = {n: f"{name}_{n}" for n in self._output_names}
 
     def update(self):
-        in_vals = [net.resolve() == Signal.HIGH for net in self.inputs]
-        out_vals = self.logic_fn(in_vals)
-        for i, val in enumerate(out_vals):
-            self.outputs[i].drive(
-                self._driver_ids[i],
+        env = {}
+        for pin_name in self._input_names:
+            net = self._pin_map[pin_name]
+            env[pin_name] = net.resolve() == Signal.HIGH
+
+        for pin_name in self._output_names:
+            val = self._program.evaluate(pin_name, env)
+            net = self._pin_map[pin_name]
+            net.drive(
+                self._driver_ids[pin_name],
                 DriveState.HIGH if val else DriveState.LOW
             )
 
