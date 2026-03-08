@@ -51,8 +51,24 @@ class CPU:
         self.data_leds = [c.add_component(LED(f"DLED{i}", self.data_bus[i]))
                           for i in range(8)]
 
+        # === Microcode data buses (created early — directly drive control lines) ===
+        self.uc_lo_bus = [c.create_net(f"UC_LO{i}") for i in range(8)]
+        self.uc_hi_bus = [c.create_net(f"UC_HI{i}") for i in range(8)]
+
+        # Aliases: microcode ROM data pins ARE the control select lines
+        # ASSERT demux select = uc_lo_bus[0:3]
+        # LATCH demux select  = uc_lo_bus[3:6]
+        # ALU_OP              = uc_lo_bus[6:8] + uc_hi_bus[0]
+        # OFFSET_CTRL         = uc_hi_bus[1:2]
+        # CONTROL demux       = uc_hi_bus[3:4]  (already wired below)
+        # END                 = uc_hi_bus[5]
+        # FLAGS_LATCH         = uc_hi_bus[6]
+        self.assert_sel = self.uc_lo_bus[0:3]
+        self.latch_sel = self.uc_lo_bus[3:6]
+        self.alu_op = [self.uc_lo_bus[6], self.uc_lo_bus[7], self.uc_hi_bus[0]]
+        self.offset_ctrl = [self.uc_hi_bus[1], self.uc_hi_bus[2]]
+
         # === ASSERT demux (74138) ===
-        self.assert_sel = [c.create_net(f"ASSERT_SEL{i}") for i in range(3)]
         self.assert_enable = c.create_net("ASSERT_EN")
         assert_g2a = c.create_net("ASSERT_G2A")
         assert_g2b = c.create_net("ASSERT_G2B")
@@ -62,12 +78,8 @@ class CPU:
         c.add_component(IC74138("ASSERT",
             self.assert_sel[0], self.assert_sel[1], self.assert_sel[2],
             self.assert_enable, assert_g2a, assert_g2b, self.assert_out))
-        self.assert_enable.drive("ctrl", DriveState.LOW)
-        for s in self.assert_sel:
-            s.drive("ctrl", DriveState.LOW)
 
         # === LATCH demux (74138) ===
-        self.latch_sel = [c.create_net(f"LATCH_SEL{i}") for i in range(3)]
         self.latch_enable = c.create_net("LATCH_EN")
         latch_g2a = c.create_net("LATCH_G2A")
         latch_g2b = c.create_net("LATCH_G2B")
@@ -77,9 +89,6 @@ class CPU:
         c.add_component(IC74138("LATCH",
             self.latch_sel[0], self.latch_sel[1], self.latch_sel[2],
             self.latch_enable, latch_g2a, latch_g2b, self.latch_out))
-        self.latch_enable.drive("ctrl", DriveState.LOW)
-        for s in self.latch_sel:
-            s.drive("ctrl", DriveState.LOW)
 
         # === TMP register ===
         self.tmp = c.add_component(IC74574("TMP",
@@ -130,10 +139,6 @@ class CPU:
             self.arg_out, self.arg_addr_out, vcc, gnd))
 
         # === Address offset logic (3x GAL22V10) ===
-        self.offset_ctrl = [c.create_net(f"OFFSET_CTRL{i}") for i in range(2)]
-        self.offset_ctrl[0].drive("ctrl", DriveState.LOW)
-        self.offset_ctrl[1].drive("ctrl", DriveState.LOW)
-
         self.addr_bus = [c.create_net(f"ADDR{i}") for i in range(16)]
         carry4 = c.create_net("OFFSET_C4")
         carry8 = c.create_net("OFFSET_C8")
@@ -194,7 +199,7 @@ class CPU:
         self.pc_count_up.drive("ctrl", DriveState.HIGH)
         self.pc_count_down.drive("ctrl", DriveState.HIGH)
         self.pc_mr = c.create_net("PC_MR")
-        self.pc_mr.drive("ctrl", DriveState.HIGH)
+        self.pc_mr.drive("ctrl", DriveState.HIGH)  # start in reset
 
         self.pc_l_int = [c.create_net(f"PCL_INT{i}") for i in range(8)]
         self.pc_h_int = [c.create_net(f"PCH_INT{i}") for i in range(8)]
@@ -237,7 +242,7 @@ class CPU:
         self.sp_count_up.drive("ctrl", DriveState.HIGH)
         self.sp_count_down.drive("ctrl", DriveState.HIGH)
         self.sp_mr = c.create_net("SP_MR")
-        self.sp_mr.drive("ctrl", DriveState.HIGH)
+        self.sp_mr.drive("ctrl", DriveState.HIGH)  # start in reset
 
         self.sp_l_int = [c.create_net(f"SPL_INT{i}") for i in range(8)]
         self.sp_h_int = [c.create_net(f"SPH_INT{i}") for i in range(8)]
@@ -279,10 +284,6 @@ class CPU:
             self.sp_l_int, self.data_bus, vcc, self.assert_out[6]))
 
         # === ALU (5x GAL22V10 + 2x 74573 + 1x 74574) ===
-        self.alu_op = [c.create_net(f"ALU_OP{i}") for i in range(3)]
-        for op in self.alu_op:
-            op.drive("ctrl", DriveState.LOW)
-
         self.alu_r = [c.create_net(f"ALU_R{i}") for i in range(8)]
         self.alu_s = [c.create_net(f"ALU_S{i}") for i in range(8)]
 
@@ -373,7 +374,6 @@ class CPU:
 
         # Flag register (74574)
         self.flag_latch = c.create_net("FLAG_LATCH")
-        self.flag_latch.drive("ctrl", DriveState.LOW)
         flag_inputs = [self.flag_z, self.flag_n, self.flag_c,
                        gnd, gnd, gnd, gnd, gnd]
         self.flag_out = [c.create_net(f"FLAG_OUT{i}") for i in range(8)]
@@ -383,16 +383,13 @@ class CPU:
 
         # === Microcode (1x 40193 + 2x 28256 + 1x 74138) ===
         self.clk = c.create_net("CLK")
-        self.clk.drive("ctrl", DriveState.LOW)
 
         self.micro_clk = c.create_net("MICRO_CLK")
-        self.micro_clk.drive("ctrl", DriveState.HIGH)
         micro_cpd = c.create_net("MICRO_CPD")
         micro_cpd.drive("rail", DriveState.HIGH)
         micro_pl = c.create_net("MICRO_PL")
         micro_pl.drive("rail", DriveState.HIGH)
         self.micro_mr = c.create_net("MICRO_MR")
-        self.micro_mr.drive("ctrl", DriveState.HIGH)
         self.upc_out = [c.create_net(f"UPC{i}") for i in range(4)]
         micro_tcu = c.create_net("MICRO_TCU")
         micro_tcd = c.create_net("MICRO_TCD")
@@ -408,15 +405,14 @@ class CPU:
                    self.i_out +
                    self.flag_out[0:3])
 
-        self.uc_lo_bus = [c.create_net(f"UC_LO{i}") for i in range(8)]
-        self.uc_hi_bus = [c.create_net(f"UC_HI{i}") for i in range(8)]
-
+        # Two 28256 ROMs for 16-bit microcode word
+        # Data outputs directly drive control lines (no Python intermediary)
         self.ucode_lo = c.add_component(IC28256("UCODE_LO",
             uc_addr, self.uc_lo_bus, gnd, gnd))
         self.ucode_hi = c.add_component(IC28256("UCODE_HI",
             uc_addr, self.uc_hi_bus, gnd, gnd))
 
-        # CONTROL demux
+        # CONTROL demux: select from uc_hi_bus[3:4], gated by CLK
         ctrl_c = c.create_net("CTRL_DEMUX_C")
         ctrl_c.drive("rail", DriveState.LOW)
         ctrl_g2a = c.create_net("CTRL_G2A")
@@ -431,15 +427,72 @@ class CPU:
             self.uc_hi_bus[3], self.uc_hi_bus[4], ctrl_c,
             self.clk, ctrl_g2a, ctrl_g2b, self.ctrl_out))
 
+        # CONTROL demux is the sole driver for PC/SP count signals
         self.pc_count_up.drive("ctrl", DriveState.HI_Z)
         self.sp_count_down.drive("ctrl", DriveState.HI_Z)
         self.sp_count_up.drive("ctrl", DriveState.HI_Z)
 
-        # === Initialization: reset counters, then settle ===
+        # === Phase clock generator ===
+        # 1x 40193 counter (states 0-7), 1x 74573 latch (captures END and
+        # FLAGS_LATCH at state 0), 1x GAL22V10 decoder (produces 6 control
+        # signals from latched inputs).  Q3 feeds back to MR for auto-reset.
+
+        # Phase counter
+        self.step_clk = c.create_net("STEP_CLK")
+        self.step_clk.drive("oscillator", DriveState.LOW)
+        phase_cpd = c.create_net("PHASE_CPD")
+        phase_cpd.drive("rail", DriveState.HIGH)
+        phase_pl = c.create_net("PHASE_PL")
+        phase_pl.drive("rail", DriveState.HIGH)
+        phase_d = [c.create_net(f"PHASE_D{i}") for i in range(4)]
+        for d in phase_d:
+            d.drive("rail", DriveState.LOW)
+        self.phase_q = [c.create_net(f"PHASE_Q{i}") for i in range(4)]
+        phase_tcu = c.create_net("PHASE_TCU")
+        phase_tcd = c.create_net("PHASE_TCD")
+        # Q3 connects to MR: counter auto-resets when it reaches 8
+        c.add_component(IC40193("PHASE_CTR",
+            phase_d, self.phase_q,
+            self.step_clk, phase_cpd,
+            phase_pl, self.phase_q[3],  # MR = Q3
+            phase_tcu, phase_tcd))
+
+        # Latch for END and FLAGS_LATCH bits from microcode ROM.
+        # Transparent at state 0 (IDLE), holds during states 1-7.
+        # This prevents feedback: MICRO_MR resetting the microPC would
+        # change ROM output mid-cycle without this isolation latch.
+        phase_le = c.create_net("PHASE_LE")
+        latch_end = c.create_net("LATCH_END")
+        latch_fl = c.create_net("LATCH_FL")
+        phase_latch_in = [self.uc_hi_bus[5], self.uc_hi_bus[6]] + \
+            [gnd, gnd, gnd, gnd, gnd, gnd]
+        phase_latch_out = [latch_end, latch_fl] + \
+            [c.create_net(f"PHLATCH_U{i}") for i in range(6)]
+        c.add_component(IC74573("PHASE_LATCH",
+            phase_latch_in, phase_latch_out, phase_le, gnd))
+
+        # Phase decoder GAL: reads latched END/FL + counter state
+        c.add_component(GAL22V10("PHASE_DECODE",
+            _load_pld("phase_decode.pld"), {
+            "P0": self.phase_q[0],
+            "P1": self.phase_q[1],
+            "P2": self.phase_q[2],
+            "FL": latch_fl,               # latched FLAGS_LATCH
+            "END": latch_end,             # latched END
+            "CLK_OUT": self.clk,
+            "ASSR_EN": self.assert_enable,
+            "LTCH_EN": self.latch_enable,
+            "FLG_LT": self.flag_latch,
+            "MCK": self.micro_clk,
+            "MMR": self.micro_mr,
+            "PH_LE": phase_le,
+        }))
+
+        # === Initialization: reset all counters ===
         c.settle()
+        # PC and SP reset via their own MR nets
         self.pc_mr.drive("ctrl", DriveState.LOW)
         self.sp_mr.drive("ctrl", DriveState.LOW)
-        self.micro_mr.drive("ctrl", DriveState.LOW)
         c.settle()
 
     # --- Re-exported constants for backward compatibility ---
@@ -553,11 +606,46 @@ class CPU:
     def read_arg(self):
         return self._read_nets(self.arg_out)
 
+    def read_ram(self, addr):
+        """Read a byte from RAM directly (for testing)."""
+        return self.ram._memory[addr]
+
+    def _read_register(self, reg_574):
+        """Read a 74574 register's latched value directly (for testing)."""
+        val = 0
+        for i in range(8):
+            if reg_574._latched[i] == Signal.HIGH:
+                val |= (1 << i)
+        return val
+
+    def _current_uc_addr(self):
+        """Compute current microcode ROM address from microPC + I + flags."""
+        upc = self.read_upc()
+        i_val = self.read_i()
+        z, n, c = self.read_flags()
+        flags = (1 if z else 0) | ((1 if n else 0) << 1) | ((1 if c else 0) << 2)
+        return upc | (i_val << 4) | (flags << 12)
+
     def set_alu_op(self, op):
-        """Set ALU operation (0-7)."""
-        for i in range(3):
-            self.alu_op[i].drive("ctrl",
-                DriveState.HIGH if (op >> i) & 1 else DriveState.LOW)
+        """Set ALU operation by patching microcode ROM at current address (for testing)."""
+        addr = self._current_uc_addr()
+        lo = self.ucode_lo._memory[addr]
+        hi = self.ucode_hi._memory[addr]
+        # ALU_OP = bits 6-8: lo bits 6-7, hi bit 0
+        lo = (lo & 0x3F) | ((op & 3) << 6)
+        hi = (hi & 0xFE) | ((op >> 2) & 1)
+        self.ucode_lo._memory[addr] = lo
+        self.ucode_hi._memory[addr] = hi
+        self.settle()
+
+    def set_offset_ctrl(self, mode):
+        """Set offset mode by patching microcode ROM at current address (for testing)."""
+        addr = self._current_uc_addr()
+        hi = self.ucode_hi._memory[addr]
+        # OFFSET = bits 9-10: hi bits 1-2
+        hi = (hi & 0xF9) | ((mode & 3) << 1)
+        self.ucode_hi._memory[addr] = hi
+        self.settle()
 
     def read_flags(self):
         """Return (zero, negative, carry) from latched flag register."""
@@ -567,10 +655,17 @@ class CPU:
         return z, n, c
 
     def pulse_flag_latch(self):
-        """Latch current ALU flags into the flag register."""
-        self.flag_latch.drive("ctrl", DriveState.HIGH)
-        self.settle()
-        self.flag_latch.drive("ctrl", DriveState.LOW)
+        """Latch current ALU flags into the flag register (for testing).
+
+        Reads the combinational flag outputs from the ALU GALs and forces
+        them into the flag register directly, bypassing the flag_latch net
+        (which is driven by the phase clock generator during normal operation).
+        """
+        z = self.flag_z.resolve() == Signal.HIGH
+        n = self.flag_n.resolve() == Signal.HIGH
+        c = self.flag_c.resolve() == Signal.HIGH
+        val = (1 if z else 0) | ((1 if n else 0) << 1) | ((1 if c else 0) << 2)
+        self._force_register(self.flag_reg, val)
         self.settle()
 
     def read_upc(self):
@@ -604,65 +699,19 @@ class CPU:
             self.ucode_hi.load(addr, [hi_byte])
 
     def tick(self):
-        """Execute one microcode step."""
-        self.settle()
-        uc = self._read_uc_word()
-        assert_sel = uc & 7
-        latch_sel = (uc >> 3) & 7
-        alu_op = (uc >> 6) & 7
-        offset = (uc >> 9) & 3
-        end = bool(uc & (1 << 13))
-        flags_latch = bool(uc & (1 << 14))
+        """Execute one microcode step by pulsing the phase clock 8 times.
 
-        for i in range(3):
-            self.assert_sel[i].drive("ctrl",
-                DriveState.HIGH if (assert_sel >> i) & 1 else DriveState.LOW)
-            self.latch_sel[i].drive("ctrl",
-                DriveState.HIGH if (latch_sel >> i) & 1 else DriveState.LOW)
-            self.alu_op[i].drive("ctrl",
-                DriveState.HIGH if (alu_op >> i) & 1 else DriveState.LOW)
-        for i in range(2):
-            self.offset_ctrl[i].drive("ctrl",
-                DriveState.HIGH if (offset >> i) & 1 else DriveState.LOW)
-
-        # Phase 1: CLK HIGH
-        self.assert_enable.drive("ctrl", DriveState.HIGH)
-        self.latch_enable.drive("ctrl", DriveState.HIGH)
-        self.clk.drive("ctrl", DriveState.HIGH)
-        self.settle()
-
-        if flags_latch:
-            self.flag_latch.drive("ctrl", DriveState.HIGH)
+        The phase counter (40193) counts 0-7 and auto-resets via Q3→MR.
+        The phase decoder GAL translates each state into control signals.
+        This method is analogous to a fast oscillator driving the counter.
+        """
+        self.settle()  # Phase 0: counter=0, ROM outputs settle
+        for _ in range(8):
+            self.step_clk.drive("oscillator", DriveState.LOW)
             self.settle()
-            self.flag_latch.drive("ctrl", DriveState.LOW)
+            self.step_clk.drive("oscillator", DriveState.HIGH)
             self.settle()
-
-        # Phase 2a: Disable LATCH (rising edge triggers register capture)
-        self.latch_enable.drive("ctrl", DriveState.LOW)
-        self.settle()
-
-        # Phase 2b: Disable ASSERT and CLK
-        self.assert_enable.drive("ctrl", DriveState.LOW)
-        self.clk.drive("ctrl", DriveState.LOW)
-        self.settle()
-
-        if end:
-            self.micro_mr.drive("ctrl", DriveState.HIGH)
-            self.settle()
-            self.micro_mr.drive("ctrl", DriveState.LOW)
-            self.settle()
-        else:
-            self.micro_clk.drive("ctrl", DriveState.LOW)
-            self.settle()
-            self.micro_clk.drive("ctrl", DriveState.HIGH)
-            self.settle()
-
-    def set_offset_ctrl(self, mode):
-        """Set offset mode: 0=passthrough, 1=ARG, 2=ARG+1."""
-        self.offset_ctrl[0].drive("ctrl",
-            DriveState.HIGH if mode & 1 else DriveState.LOW)
-        self.offset_ctrl[1].drive("ctrl",
-            DriveState.HIGH if mode & 2 else DriveState.LOW)
+        # Counter has wrapped back to 0 (IDLE)
 
     def _force_register(self, reg_574, value):
         """Force a '574 register's latched value. For testing only."""

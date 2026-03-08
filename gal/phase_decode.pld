@@ -1,0 +1,67 @@
+Name     PHASE_DECODE;
+PartNo   09;
+Date     2026-03-08;
+Revision 01;
+Designer cpuai2;
+Company  ;
+Assembly ;
+Location ;
+Device   g22v10;
+
+/* Phase clock decoder: translates 3-bit phase counter state plus
+   latched END and FLAGS_LATCH bits into CPU control signals.
+
+   Inputs:
+     P0, P1, P2  - phase counter Q0-Q2 (8 states)
+     FL           - latched FLAGS_LATCH from microcode ROM
+     END          - latched END from microcode ROM
+
+   Outputs:
+     CLK_OUT  - master clock (gates CONTROL demux)
+     ASSR_EN  - ASSERT demux enable
+     LTCH_EN  - LATCH demux enable
+     FLG_LT   - flag register CLK
+     MCK      - microPC counter clock (count on rising edge)
+     MMR      - microPC counter master reset
+     PH_LE    - phase latch LE (transparent at state 0)
+*/
+
+PIN 2  = P0;
+PIN 3  = P1;
+PIN 4  = P2;
+PIN 5  = FL;
+PIN 6  = END;
+PIN 23 = CLK_OUT;
+PIN 22 = ASSR_EN;
+PIN 21 = LTCH_EN;
+PIN 20 = FLG_LT;
+PIN 19 = MCK;
+PIN 18 = MMR;
+PIN 17 = PH_LE;
+
+/* State decode */
+S0 = !P2 & !P1 & !P0;
+S1 = !P2 & !P1 & P0;
+S2 = !P2 & P1 & !P0;
+S3 = !P2 & P1 & P0;
+S4 = P2 & !P1 & !P0;
+S6 = P2 & P1 & !P0;
+
+/* CLK and ASSERT_EN: HIGH during states 1-4 */
+CLK_OUT = S1 # S2 # S3 # S4;
+ASSR_EN = S1 # S2 # S3 # S4;
+
+/* LATCH_EN: HIGH during states 1-3 */
+LTCH_EN = S1 # S2 # S3;
+
+/* FLAG_LATCH: HIGH only in state 2 when FL is set */
+FLG_LT = S2 & FL;
+
+/* MICRO_CLK: LOW only in state 6 when END=0 (rising edge in state 7) */
+MCK = !S6 # END;
+
+/* MICRO_MR: HIGH only in state 6 when END=1 */
+MMR = S6 & END;
+
+/* Phase latch enable: transparent at state 0 (IDLE) */
+PH_LE = S0;

@@ -129,15 +129,13 @@ class TestALU:
         return cpu
 
     def alu_result(self, cpu, op):
-        """Set ALU op, assert result on data bus, return value."""
+        """Set ALU op via ROM patch, read result from ALU output nets."""
         cpu.set_alu_op(op)
-        # Enable ASSERT[1] to drive ALU result onto data bus
-        cpu.assert_enable.drive("ctrl", DriveState.HIGH)
-        cpu.assert_sel[0].drive("ctrl", DriveState.HIGH)   # sel = 001 = output 1
-        cpu.assert_sel[1].drive("ctrl", DriveState.LOW)
-        cpu.assert_sel[2].drive("ctrl", DriveState.LOW)
         cpu.settle()
-        return cpu.read_data_bus()
+        # Read result directly from ALU output nets
+        if op == CPU.ALU_SHIFT:
+            return cpu._read_nets(cpu.alu_s)
+        return cpu._read_nets(cpu.alu_r)
 
     def alu_flags(self, cpu, op):
         """Set ALU op, latch flags, return (z, n, c)."""
@@ -488,13 +486,8 @@ class TestMicrocode:
         cpu.load_microcode(0x00, 0,
             CPU.microcode_word(assert_sel=2, latch_sel=7))
         cpu.tick()
-        # Assert TMP(0) onto bus and read
-        cpu.assert_enable.drive("ctrl", DriveState.HIGH)
-        cpu.assert_sel[0].drive("ctrl", DriveState.LOW)
-        cpu.assert_sel[1].drive("ctrl", DriveState.LOW)
-        cpu.assert_sel[2].drive("ctrl", DriveState.LOW)
-        cpu.settle()
-        assert cpu.read_data_bus() == 0x42
+        # Read TMP register directly
+        assert cpu._read_register(cpu.tmp) == 0x42
 
     def test_latch_i_register(self):
         """LATCH=0 should latch data bus into I (and old I into ARG)."""
@@ -567,7 +560,7 @@ class TestMicrocode:
         cpu._force_register(cpu.a_reg, 0xFF)
         cpu._force_register(cpu.b_reg, 0x01)
         cpu.settle()
-        # Latch flags first: ADD(0xFF+0x01) -> Z=1, C=1
+        # Set flags: ADD(0xFF+0x01) -> Z=1, C=1
         cpu.set_alu_op(CPU.ALU_ADD)
         cpu.settle()
         cpu.pulse_flag_latch()
@@ -683,17 +676,8 @@ class TestInstructions:
         cpu = self._make_cpu([0xBE, opcode], sp=0x0100)
         cpu.run_instruction()
         assert cpu.read_sp() == 0x00FF
-        # Read back from RAM at address 0x0100
-        cpu._force_register(cpu.h_reg, 0x01)
-        cpu._force_register(cpu.l_reg, 0x00)
-        cpu.settle()
-        # Assert MEM onto bus to read it
-        cpu.assert_enable.drive("ctrl", DriveState.HIGH)
-        cpu.assert_sel[0].drive("ctrl", DriveState.LOW)
-        cpu.assert_sel[1].drive("ctrl", DriveState.HIGH)
-        cpu.assert_sel[2].drive("ctrl", DriveState.LOW)
-        cpu.settle()
-        assert cpu.read_data_bus() == 0xBE
+        # Read back from RAM directly
+        assert cpu.read_ram(0x0100) == 0xBE
 
     def test_alu_add_push(self):
         """ALU ADD with push: compute A+B, store result in A, push to stack."""
@@ -708,15 +692,7 @@ class TestInstructions:
         assert cpu.read_b() == 0x10  # old A
         assert cpu.read_sp() == 0x00FF
         # Check stack: RAM[0x0100] should have 0x30
-        cpu._force_register(cpu.h_reg, 0x01)
-        cpu._force_register(cpu.l_reg, 0x00)
-        cpu.settle()
-        cpu.assert_enable.drive("ctrl", DriveState.HIGH)
-        cpu.assert_sel[0].drive("ctrl", DriveState.LOW)
-        cpu.assert_sel[1].drive("ctrl", DriveState.HIGH)
-        cpu.assert_sel[2].drive("ctrl", DriveState.LOW)
-        cpu.settle()
-        assert cpu.read_data_bus() == 0x30
+        assert cpu.read_ram(0x0100) == 0x30
 
     def test_alu_sub_flags_only(self):
         """ALU SUB flags-only: sets flags but doesn't change A or push."""

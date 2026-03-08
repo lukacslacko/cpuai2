@@ -3,9 +3,6 @@
 import pytest
 from asm import assemble
 from cpu import CPU
-from circuit import Signal, DriveState
-
-
 class TestAssembler:
     """Unit tests for the assembler."""
 
@@ -107,20 +104,8 @@ class TestPrograms:
         return cpu
 
     def _read_ram(self, cpu, addr):
-        """Read a byte from RAM by asserting MEM."""
-        cpu._force_register(cpu.h_reg, (addr >> 8) & 0xFF)
-        cpu._force_register(cpu.l_reg, addr & 0xFF)
-        cpu.set_offset_ctrl(0)  # passthrough, no ARG offset
-        cpu.settle()
-        cpu.assert_enable.drive("ctrl", DriveState.HIGH)
-        cpu.assert_sel[0].drive("ctrl", DriveState.LOW)
-        cpu.assert_sel[1].drive("ctrl", DriveState.HIGH)  # ASSERT=MEM(2)
-        cpu.assert_sel[2].drive("ctrl", DriveState.LOW)
-        cpu.settle()
-        val = cpu.read_data_bus()
-        cpu.assert_enable.drive("ctrl", DriveState.LOW)
-        cpu.settle()
-        return val
+        """Read a byte from RAM directly."""
+        return cpu.read_ram(addr)
 
     def test_load_two_values_and_add(self):
         """LDA 0x10; LDA 0x20; ADD -> A=0x30 pushed to stack."""
