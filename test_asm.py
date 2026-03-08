@@ -487,3 +487,21 @@ class TestPrograms:
         """, 12, sp=0x0100)
         assert self._read_ram(cpu, 0x0050) == 0xEE
         assert self._read_ram(cpu, 0x0060) == 0xEE
+
+    def test_rdsp(self):
+        """RDSP copies SP into B:A (B=high, A=low)."""
+        cpu = self._run("""
+            PUSH 0xAA       ; SP goes from 0x0100 to 0x00FF
+            PUSH 0xBB       ; SP goes from 0x00FF to 0x00FE
+            RDSP            ; A=0xFE (SPL), B=0x00 (SPH)
+        """, 3, sp=0x0100)
+        assert cpu.read_a() == 0xFE
+        assert cpu.read_b() == 0x00
+
+    def test_rdsp_high_sp(self):
+        """RDSP with SP in high memory captures both bytes."""
+        cpu = self._run("""
+            RDSP            ; A=0x50 (SPL), B=0x02 (SPH)
+        """, 1, sp=0x0250)
+        assert cpu.read_a() == 0x50
+        assert cpu.read_b() == 0x02

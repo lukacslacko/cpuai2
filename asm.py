@@ -10,6 +10,7 @@ ALU instructions (bit 3 = 0):
 Other instructions (bit 3 = 1):
     LDA <imm>    - load immediate into A
     PUSH <imm>   - push immediate to stack
+    RDSP         - read SP into B:A (B=high, A=low)
     NOP          - no operation (condition=never)
 
 Condition prefixes (default is AL = always):
@@ -61,6 +62,7 @@ OTHER_OPS = {
     "STAB": CPU.OTHER_STAB,
     "POP": CPU.OTHER_POP,
     "PUSHM": CPU.OTHER_PUSHM,
+    "RDSP": CPU.OTHER_RDSP,
 }
 
 

@@ -2,6 +2,14 @@
 
 Breadboard CPU emulator built from discrete logic IC components.
 
+## Assembly Language
+
+The CPU has a custom instruction set with ALU operations, memory
+access, branching, and subroutine calls. Any instruction can be made
+conditional using flag-based condition codes. See
+[`ASSEMBLY.md`](ASSEMBLY.md) for the full instruction set reference
+and assembler documentation.
+
 ## GAL22V10 Programming
 
 Three GAL22V10 chips implement the address offset logic, which computes

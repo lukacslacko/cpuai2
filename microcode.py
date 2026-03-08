@@ -65,6 +65,7 @@ OTHER_LDAB = 8
 OTHER_STAB = 9
 OTHER_POP = 10
 OTHER_PUSHM = 11
+OTHER_RDSP = 12
 
 # Microcode word bit positions
 UC_ASSERT = 0      # bits 0-2
@@ -328,6 +329,13 @@ def generate_microcode():
                     store(instr, 12,
                         MW(assert_sel=ASSERT_TMP, latch_sel=LATCH_MEM_WE,
                            offset=OFFSET_ARG, end=True), flags=f)
+
+                elif sub_op == OTHER_RDSP:
+                    store(instr, 6,
+                        MW(assert_sel=ASSERT_SPH, latch_sel=LATCH_A_B), flags=f)
+                    store(instr, 7,
+                        MW(assert_sel=ASSERT_SPL, latch_sel=LATCH_A_B,
+                           end=True), flags=f)
 
                 elif sub_op == OTHER_PUSHM:
                     store(instr, 6,

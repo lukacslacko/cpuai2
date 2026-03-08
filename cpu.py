@@ -17,7 +17,7 @@ from microcode import (
     COND_NS, COND_NC,
     OTHER_LDA_IMM, OTHER_PUSH_IMM, OTHER_BR, OTHER_JMP, OTHER_CALL,
     OTHER_RET, OTHER_LDASP, OTHER_STASP, OTHER_LDAB, OTHER_STAB,
-    OTHER_POP, OTHER_PUSHM,
+    OTHER_POP, OTHER_PUSHM, OTHER_RDSP,
     UC_ASSERT, UC_LATCH, UC_ALU, UC_OFFSET, UC_CONTROL, UC_END, UC_FLAGS,
     microcode_word as _microcode_word,
     encode_instruction as _encode_instruction,
@@ -561,6 +561,7 @@ class CPU:
     OTHER_STAB = OTHER_STAB
     OTHER_POP = OTHER_POP
     OTHER_PUSHM = OTHER_PUSHM
+    OTHER_RDSP = OTHER_RDSP
 
     # --- Helper methods ---
 
