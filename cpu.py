@@ -775,6 +775,10 @@ class CPU:
 
     OTHER_LDA_IMM = 0
     OTHER_PUSH_IMM = 1
+    OTHER_BR = 2
+    OTHER_JMP = 3
+    OTHER_CALL = 4
+    OTHER_RET = 5
 
     def generate_microcode(self):
         """Generate and load all microcode into the EEPROMs."""
@@ -881,6 +885,108 @@ class CPU:
                             MW(assert_sel=self.ASSERT_ARG,
                                latch_sel=self.LATCH_MEM_WE,
                                control=self.CTRL_SP_DEC, end=True),
+                            flags=flags)
+
+                    elif sub_op == self.OTHER_BR:
+                        # BR immediate: ARG -> PCL, END
+                        self.load_microcode(instr, 6,
+                            MW(assert_sel=self.ASSERT_ARG,
+                               latch_sel=self.LATCH_PCL, end=True),
+                            flags=flags)
+
+                    elif sub_op == self.OTHER_JMP:
+                        # JMP: A -> PCL; B -> PCH, END
+                        self.load_microcode(instr, 6,
+                            MW(assert_sel=self.ASSERT_ALU,
+                               latch_sel=self.LATCH_PCL,
+                               alu_op=self.ALU_A),
+                            flags=flags)
+                        self.load_microcode(instr, 7,
+                            MW(assert_sel=self.ASSERT_ALU,
+                               latch_sel=self.LATCH_PCH,
+                               alu_op=self.ALU_B, end=True),
+                            flags=flags)
+
+                    elif sub_op == self.OTHER_CALL:
+                        # CALL: push PC to stack, then jump to A:B
+                        # Step 6-7: load H:L from SP
+                        self.load_microcode(instr, 6,
+                            MW(assert_sel=self.ASSERT_SPL,
+                               latch_sel=self.LATCH_L),
+                            flags=flags)
+                        self.load_microcode(instr, 7,
+                            MW(assert_sel=self.ASSERT_SPH,
+                               latch_sel=self.LATCH_H),
+                            flags=flags)
+                        # Step 8: PCH -> MEM at SP, SP--
+                        self.load_microcode(instr, 8,
+                            MW(assert_sel=self.ASSERT_PCH,
+                               latch_sel=self.LATCH_MEM_WE,
+                               control=self.CTRL_SP_DEC),
+                            flags=flags)
+                        # Step 9-10: reload H:L from new SP
+                        self.load_microcode(instr, 9,
+                            MW(assert_sel=self.ASSERT_SPL,
+                               latch_sel=self.LATCH_L),
+                            flags=flags)
+                        self.load_microcode(instr, 10,
+                            MW(assert_sel=self.ASSERT_SPH,
+                               latch_sel=self.LATCH_H),
+                            flags=flags)
+                        # Step 11: PCL -> MEM at SP, SP--
+                        self.load_microcode(instr, 11,
+                            MW(assert_sel=self.ASSERT_PCL,
+                               latch_sel=self.LATCH_MEM_WE,
+                               control=self.CTRL_SP_DEC),
+                            flags=flags)
+                        # Step 12-13: jump to A:B
+                        self.load_microcode(instr, 12,
+                            MW(assert_sel=self.ASSERT_ALU,
+                               latch_sel=self.LATCH_PCL,
+                               alu_op=self.ALU_A),
+                            flags=flags)
+                        self.load_microcode(instr, 13,
+                            MW(assert_sel=self.ASSERT_ALU,
+                               latch_sel=self.LATCH_PCH,
+                               alu_op=self.ALU_B, end=True),
+                            flags=flags)
+
+                    elif sub_op == self.OTHER_RET:
+                        # RET: pop PC from stack
+                        # Step 6: dummy SP++ (pre-increment to reach data)
+                        self.load_microcode(instr, 6,
+                            MW(assert_sel=self.ASSERT_TMP,
+                               latch_sel=self.LATCH_TMP,
+                               control=self.CTRL_SP_INC),
+                            flags=flags)
+                        # Step 7-8: load H:L from new SP
+                        self.load_microcode(instr, 7,
+                            MW(assert_sel=self.ASSERT_SPL,
+                               latch_sel=self.LATCH_L),
+                            flags=flags)
+                        self.load_microcode(instr, 8,
+                            MW(assert_sel=self.ASSERT_SPH,
+                               latch_sel=self.LATCH_H),
+                            flags=flags)
+                        # Step 9: MEM -> PCL, SP++
+                        self.load_microcode(instr, 9,
+                            MW(assert_sel=self.ASSERT_MEM,
+                               latch_sel=self.LATCH_PCL,
+                               control=self.CTRL_SP_INC),
+                            flags=flags)
+                        # Step 10-11: reload H:L from new SP
+                        self.load_microcode(instr, 10,
+                            MW(assert_sel=self.ASSERT_SPL,
+                               latch_sel=self.LATCH_L),
+                            flags=flags)
+                        self.load_microcode(instr, 11,
+                            MW(assert_sel=self.ASSERT_SPH,
+                               latch_sel=self.LATCH_H),
+                            flags=flags)
+                        # Step 12: MEM -> PCH, END
+                        self.load_microcode(instr, 12,
+                            MW(assert_sel=self.ASSERT_MEM,
+                               latch_sel=self.LATCH_PCH, end=True),
                             flags=flags)
 
                     else:

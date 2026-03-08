@@ -249,3 +249,145 @@ class TestPrograms:
         assert self._read_ram(cpu, 0x00FF) == 10   # 30 - 20
         assert self._read_ram(cpu, 0x00FE) == 0xAA # CS.PUSH
         assert cpu.read_sp() == 0x00FD  # 3 pushes total
+
+    def test_br_immediate(self):
+        """BR sets PCL to the argument (branch within page)."""
+        # Code at 0x8000: BR 0x10 → PC becomes 0x80:0x10
+        cpu = self._run("""
+            BR 0x10
+        """, 1)
+        assert cpu.read_pc() == 0x8010
+
+    def test_jmp(self):
+        """JMP sets PC to A:B (A=low, B=high)."""
+        cpu = self._run("""
+            LDA 0x00        ; A = 0x00 (will become B)
+            LDA 0x50        ; A = 0x50 (PCL), B = 0x00 (PCH)
+            JMP             ; PC = 0x0050
+        """, 3)
+        assert cpu.read_pc() == 0x0050
+
+    def test_jmp_high_address(self):
+        """JMP to address with non-zero high byte."""
+        cpu = self._run("""
+            LDA 0x90        ; A = 0x90 (will become B = PCH)
+            LDA 0x20        ; A = 0x20 (PCL), B = 0x90 (PCH)
+            JMP             ; PC = 0x9020
+        """, 3)
+        assert cpu.read_pc() == 0x9020
+
+    def test_call_and_ret(self):
+        """CALL pushes return address and jumps; RET restores it."""
+        # Layout (ROM at 0x8000):
+        #   0x8000: LDA 0x80     (set up jump target high byte)
+        #   0x8002: LDA 0x20     (A=0x20=target low, B=0x80=target high)
+        #   0x8004: CALL         (push PC=0x8006, jump to 0x8020)
+        #   0x8006: PUSH 0xDD   (should execute after RET)
+        #
+        # At 0x8020 (ROM offset 0x20):
+        #   0x8020: RET          (return to 0x8006)
+        code_main = assemble("""
+            LDA 0x80
+            LDA 0x20
+            CALL
+            PUSH 0xDD
+        """)
+        code_sub = assemble("""
+            RET
+        """)
+        cpu = CPU()
+        cpu.generate_microcode()
+        cpu._force_pc(0x8000)
+        cpu._force_sp(0x0100)
+        cpu.settle()
+        cpu.rom.load(0x0000, code_main)
+        cpu.rom.load(0x0020, code_sub)
+
+        # Execute: LDA, LDA, CALL
+        cpu.run_instruction()  # LDA 0x80
+        cpu.run_instruction()  # LDA 0x20
+        cpu.run_instruction()  # CALL -> jumps to 0x8020
+        assert cpu.read_pc() == 0x8020
+        # Return address 0x8006 should be on stack
+        # PCH=0x80 at SP+2=0x0100, PCL=0x06 at SP+1=0x00FF
+        assert cpu.read_sp() == 0x00FE
+        assert self._read_ram(cpu, 0x0100) == 0x80  # PCH
+        assert self._read_ram(cpu, 0x00FF) == 0x06  # PCL
+
+        # Execute RET
+        cpu.run_instruction()  # RET -> returns to 0x8006
+        assert cpu.read_pc() == 0x8006
+        assert cpu.read_sp() == 0x0100  # SP restored
+
+        # Execute PUSH 0xDD (proves we're back at the right place)
+        cpu.run_instruction()  # PUSH 0xDD
+        assert self._read_ram(cpu, 0x0100) == 0xDD
+        assert cpu.read_sp() == 0x00FF
+
+    def test_call_nested(self):
+        """Nested CALL/RET: call A which calls B, both return correctly."""
+        # Main:  0x8000: setup + CALL sub_a (at 0x8040)
+        # sub_a: 0x8040: CALL sub_b (at 0x8060), then RET
+        # sub_b: 0x8060: LDA 0x42, RET
+        code_main = assemble("""
+            LDA 0x80
+            LDA 0x40
+            CALL
+        """)
+        # sub_a: set up B:A = 0x8060, call, then return
+        code_sub_a = assemble("""
+            LDA 0x80
+            LDA 0x60
+            CALL
+            RET
+        """)
+        code_sub_b = assemble("""
+            LDA 0x42
+            RET
+        """)
+        cpu = CPU()
+        cpu.generate_microcode()
+        cpu._force_pc(0x8000)
+        cpu._force_sp(0x0100)
+        cpu.settle()
+        cpu.rom.load(0x0000, code_main)
+        cpu.rom.load(0x0040, code_sub_a)
+        cpu.rom.load(0x0060, code_sub_b)
+
+        # Main: LDA, LDA, CALL sub_a
+        for _ in range(3):
+            cpu.run_instruction()
+        assert cpu.read_pc() == 0x8040
+        assert cpu.read_sp() == 0x00FE
+
+        # sub_a: LDA, LDA, CALL sub_b
+        for _ in range(3):
+            cpu.run_instruction()
+        assert cpu.read_pc() == 0x8060
+        assert cpu.read_sp() == 0x00FC
+
+        # sub_b: LDA 0x42
+        cpu.run_instruction()
+        assert cpu.read_a() == 0x42
+
+        # sub_b: RET (back to sub_a)
+        cpu.run_instruction()
+        assert cpu.read_pc() == 0x8046  # after CALL in sub_a
+        assert cpu.read_sp() == 0x00FE
+
+        # sub_a: RET (back to main)
+        cpu.run_instruction()
+        assert cpu.read_pc() == 0x8006  # after CALL in main
+        assert cpu.read_sp() == 0x0100
+
+    def test_conditional_call(self):
+        """CALL with condition: only calls when condition is met."""
+        cpu = self._run("""
+            LDA 0x80
+            LDA 0x40
+            LDA 0x00
+            SUB.F           ; 0 - 0x40: Z=0, N=1, C=0
+            ZS.CALL         ; Z=0 -> skip
+        """, 5, sp=0x0100)
+        assert cpu.read_sp() == 0x0100  # no push happened
+        assert cpu.read_pc() == 0x800A  # continued past CALL
