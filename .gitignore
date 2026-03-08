@@ -1,3 +1,7 @@
+# Generated EEPROM binaries
+microcode_lo.bin
+microcode_hi.bin
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

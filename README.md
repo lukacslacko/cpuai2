@@ -249,6 +249,25 @@ CTRL_Yn      ‾‾‾‾‾‾‾‾‾‾‾‾‾\___________________________
                           |            |          |          | triggers counter
 ```
 
+## Microcode EEPROMs
+
+The microcode is stored in two 28256 EEPROMs (32KB each). To generate
+the binary files for programming:
+
+```
+python gen_microcode.py
+```
+
+This produces `microcode_lo.bin` (bits 0-7) and `microcode_hi.bin`
+(bits 8-15). Program them with a universal programmer:
+
+```
+minipro -p 28256 -w microcode_lo.bin
+minipro -p 28256 -w microcode_hi.bin
+```
+
+Label the chips UCODE_LO and UCODE_HI to match the circuit.
+
 ## Build Instructions
 
 The file [`BUILD.md`](BUILD.md) contains the full component list and
