@@ -64,6 +64,9 @@ class LED(Component):
         self.net = net
         self.is_on = False
 
+    def pins(self):
+        return {"A": self.net}
+
     def update(self):
         self.is_on = self.net.resolve() == Signal.HIGH
 
@@ -90,6 +93,9 @@ class Switch(Component):
         else:
             self.net.drive(self._driver_id, DriveState.HI_Z)
 
+    def pins(self):
+        return {"COM": self.net}
+
     def update(self):
         pass
 
@@ -102,6 +108,9 @@ class Inverter(Component):
         self.input_net = input_net
         self.output_net = output_net
         self._driver_id = f"inv_{name}"
+
+    def pins(self):
+        return {"IN": self.input_net, "OUT": self.output_net}
 
     def update(self):
         val = self.input_net.resolve()
@@ -271,6 +280,9 @@ class GAL22V10(Component):
         self._output_names = self._program.get_output_names()
         self._driver_ids = {n: f"{name}_{n}" for n in self._output_names}
 
+    def pins(self):
+        return dict(self._pin_map)
+
     def update(self):
         env = {}
         for pin_name in self._input_names:
@@ -302,6 +314,16 @@ class IC74573(Component):
         self.oe_net = oe_net
         self._latched = [Signal.LOW] * 8
         self._driver_ids = [f"{name}_Q{i}" for i in range(8)]
+
+    def pins(self):
+        p = {}
+        for i, net in enumerate(self.inputs):
+            p[f"D{i}"] = net
+        for i, net in enumerate(self.outputs):
+            p[f"Q{i}"] = net
+        p["LE"] = self.le_net
+        p["OE"] = self.oe_net
+        return p
 
     def pre_update(self):
         le = self.le_net.resolve()
@@ -335,6 +357,16 @@ class IC74574(Component):
         self._latched = [Signal.LOW] * 8
         self._prev_clk = Signal.LOW
         self._driver_ids = [f"{name}_Q{i}" for i in range(8)]
+
+    def pins(self):
+        p = {}
+        for i, net in enumerate(self.inputs):
+            p[f"D{i}"] = net
+        for i, net in enumerate(self.outputs):
+            p[f"Q{i}"] = net
+        p["CLK"] = self.clk_net
+        p["OE"] = self.oe_net
+        return p
 
     def pre_update(self):
         clk = self.clk_net.resolve()
@@ -372,6 +404,13 @@ class IC74138(Component):
         self.g2b_net = g2b_net
         self.outputs = outputs  # 8 nets
         self._driver_ids = [f"{name}_Y{i}" for i in range(8)]
+
+    def pins(self):
+        p = {"A": self.a_net, "B": self.b_net, "C": self.c_net,
+             "G1": self.g1_net, "G2A": self.g2a_net, "G2B": self.g2b_net}
+        for i, net in enumerate(self.outputs):
+            p[f"Y{i}"] = net
+        return p
 
     def update(self):
         g1 = self.g1_net.resolve()
@@ -422,6 +461,20 @@ class IC40193(Component):
         self._driver_ids = [f"{name}_Q{i}" for i in range(4)]
         self._tcu_driver = f"{name}_TCU"
         self._tcd_driver = f"{name}_TCD"
+
+    def pins(self):
+        p = {}
+        for i, net in enumerate(self.data_inputs):
+            p[f"D{i}"] = net
+        for i, net in enumerate(self.outputs):
+            p[f"Q{i}"] = net
+        p["CPU"] = self.cpu_net
+        p["CPD"] = self.cpd_net
+        p["PL"] = self.pl_net
+        p["MR"] = self.mr_net
+        p["TCU"] = self.tcu_net
+        p["TCD"] = self.tcd_net
+        return p
 
     def pre_update(self):
         mr = self.mr_net.resolve()
@@ -491,6 +544,17 @@ class IC62256(Component):
         self._memory = bytearray(32768)
         self._driver_ids = [f"{name}_D{i}" for i in range(8)]
 
+    def pins(self):
+        p = {}
+        for i, net in enumerate(self.address_lines):
+            p[f"A{i}"] = net
+        for i, net in enumerate(self.data_lines):
+            p[f"D{i}"] = net
+        p["CE"] = self.ce_net
+        p["OE"] = self.oe_net
+        p["WE"] = self.we_net
+        return p
+
     def _read_address(self):
         addr = 0
         for i in range(15):
@@ -545,6 +609,16 @@ class IC28256(Component):
         self.oe_net = oe_net
         self._memory = bytearray(32768)
         self._driver_ids = [f"{name}_D{i}" for i in range(8)]
+
+    def pins(self):
+        p = {}
+        for i, net in enumerate(self.address_lines):
+            p[f"A{i}"] = net
+        for i, net in enumerate(self.data_lines):
+            p[f"D{i}"] = net
+        p["CE"] = self.ce_net
+        p["OE"] = self.oe_net
+        return p
 
     def load(self, address, data):
         """Load data into ROM starting at address. data can be bytes or list of ints."""

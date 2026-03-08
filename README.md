@@ -46,3 +46,13 @@ The WinCUPL PLD source files are in the `gal/` directory:
    minipro -p GAL22V10 -w gal/offset_h.jed
    ```
    Label each programmed chip to match its position in the circuit.
+
+## Build Instructions
+
+The file [`BUILD.md`](BUILD.md) contains the full component list and
+wiring connections for the CPU, generated from the emulator's circuit
+definition. To regenerate after any changes:
+
+```
+python gen_build.py
+```
