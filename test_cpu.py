@@ -1,6 +1,6 @@
 import pytest
 from cpu import CPU
-from circuit import Signal, DriveState
+from circuit import Signal, DriveState, IC62256
 
 
 class TestAddressOffset:
@@ -602,3 +602,212 @@ class TestMicrocode:
         assert cpu.read_a() == 0xFF
         cpu.tick()  # step 1: END
         assert cpu.read_upc() == 0
+
+
+class TestInstructions:
+    """Test full instruction execution with generated microcode."""
+
+    def _make_cpu(self, code, pc=0x8000, sp=0x7FFF):
+        """Create a CPU with generated microcode and code loaded into ROM."""
+        cpu = CPU()
+        cpu.generate_microcode()
+        cpu._force_pc(pc)
+        cpu._force_sp(sp)
+        cpu.settle()
+        # code is loaded at ROM offset 0 (CPU address 0x8000)
+        cpu.rom.load(pc - 0x8000, code)
+        return cpu
+
+    def test_lda_immediate(self):
+        """LDA immediate loads ARG into A."""
+        opcode = CPU.encode_instruction(CPU.COND_ALWAYS, is_alu=False,
+                                        other_op=CPU.OTHER_LDA_IMM)
+        cpu = self._make_cpu([0x42, opcode])
+        cpu.run_instruction()
+        assert cpu.read_a() == 0x42
+        assert cpu.read_pc() == 0x8002
+
+    def test_lda_immediate_moves_old_a_to_b(self):
+        """LDA immediate shifts old A into B."""
+        opcode = CPU.encode_instruction(CPU.COND_ALWAYS, is_alu=False,
+                                        other_op=CPU.OTHER_LDA_IMM)
+        cpu = self._make_cpu([0x00, opcode])
+        cpu._force_register(cpu.a_reg, 0xAB)
+        cpu.settle()
+        cpu.run_instruction()
+        assert cpu.read_a() == 0x00
+        assert cpu.read_b() == 0xAB
+
+    def test_lda_immediate_condition_never(self):
+        """LDA with condition=NEVER does nothing."""
+        opcode = CPU.encode_instruction(CPU.COND_NEVER, is_alu=False,
+                                        other_op=CPU.OTHER_LDA_IMM)
+        cpu = self._make_cpu([0x42, opcode])
+        cpu._force_register(cpu.a_reg, 0x00)
+        cpu.settle()
+        cpu.run_instruction()
+        assert cpu.read_a() == 0x00  # unchanged
+        assert cpu.read_pc() == 0x8002  # PC still advances
+
+    def test_lda_immediate_condition_carry_set(self):
+        """LDA with condition=CS executes when carry flag is set."""
+        opcode = CPU.encode_instruction(CPU.COND_CS, is_alu=False,
+                                        other_op=CPU.OTHER_LDA_IMM)
+        # Carry set: should execute
+        cpu = self._make_cpu([0x42, opcode])
+        cpu._force_register(cpu.a_reg, 0xFF)
+        cpu._force_register(cpu.b_reg, 0x01)
+        cpu.set_alu_op(CPU.ALU_ADD)
+        cpu.settle()
+        cpu.pulse_flag_latch()  # Z=1, C=1
+        cpu.run_instruction()
+        assert cpu.read_a() == 0x42  # executed
+
+    def test_lda_immediate_condition_carry_clear(self):
+        """LDA with condition=CS does NOT execute when carry is clear."""
+        opcode = CPU.encode_instruction(CPU.COND_CS, is_alu=False,
+                                        other_op=CPU.OTHER_LDA_IMM)
+        cpu = self._make_cpu([0x42, opcode])
+        cpu._force_register(cpu.a_reg, 0x01)
+        cpu._force_register(cpu.b_reg, 0x01)
+        cpu.set_alu_op(CPU.ALU_ADD)
+        cpu.settle()
+        cpu.pulse_flag_latch()  # Z=0, C=0
+        cpu.run_instruction()
+        assert cpu.read_a() != 0x42  # did not execute
+
+    def test_push_immediate(self):
+        """PUSH immediate writes ARG to memory at SP, then decrements SP."""
+        opcode = CPU.encode_instruction(CPU.COND_ALWAYS, is_alu=False,
+                                        other_op=CPU.OTHER_PUSH_IMM)
+        cpu = self._make_cpu([0xBE, opcode], sp=0x0100)
+        cpu.run_instruction()
+        assert cpu.read_sp() == 0x00FF
+        # Read back from RAM at address 0x0100
+        cpu._force_register(cpu.h_reg, 0x01)
+        cpu._force_register(cpu.l_reg, 0x00)
+        cpu.settle()
+        # Assert MEM onto bus to read it
+        cpu.assert_enable.drive("ctrl", DriveState.HIGH)
+        cpu.assert_sel[0].drive("ctrl", DriveState.LOW)
+        cpu.assert_sel[1].drive("ctrl", DriveState.HIGH)
+        cpu.assert_sel[2].drive("ctrl", DriveState.LOW)
+        cpu.settle()
+        assert cpu.read_data_bus() == 0xBE
+
+    def test_alu_add_push(self):
+        """ALU ADD with push: compute A+B, store result in A, push to stack."""
+        opcode = CPU.encode_instruction(CPU.COND_ALWAYS, is_alu=True,
+                                        alu_op=CPU.ALU_ADD, push=True)
+        cpu = self._make_cpu([0x00, opcode], sp=0x0100)
+        cpu._force_register(cpu.a_reg, 0x10)
+        cpu._force_register(cpu.b_reg, 0x20)
+        cpu.settle()
+        cpu.run_instruction()
+        assert cpu.read_a() == 0x30
+        assert cpu.read_b() == 0x10  # old A
+        assert cpu.read_sp() == 0x00FF
+        # Check stack: RAM[0x0100] should have 0x30
+        cpu._force_register(cpu.h_reg, 0x01)
+        cpu._force_register(cpu.l_reg, 0x00)
+        cpu.settle()
+        cpu.assert_enable.drive("ctrl", DriveState.HIGH)
+        cpu.assert_sel[0].drive("ctrl", DriveState.LOW)
+        cpu.assert_sel[1].drive("ctrl", DriveState.HIGH)
+        cpu.assert_sel[2].drive("ctrl", DriveState.LOW)
+        cpu.settle()
+        assert cpu.read_data_bus() == 0x30
+
+    def test_alu_sub_flags_only(self):
+        """ALU SUB flags-only: sets flags but doesn't change A or push."""
+        opcode = CPU.encode_instruction(CPU.COND_ALWAYS, is_alu=True,
+                                        alu_op=CPU.ALU_SUB, push=False)
+        cpu = self._make_cpu([0x00, opcode], sp=0x0100)
+        cpu._force_register(cpu.a_reg, 0x05)
+        cpu._force_register(cpu.b_reg, 0x05)
+        cpu.settle()
+        cpu.run_instruction()
+        assert cpu.read_a() == 0x05  # unchanged
+        assert cpu.read_sp() == 0x0100  # unchanged
+        z, n, c = cpu.read_flags()
+        assert z is True  # 5 - 5 = 0
+
+    def test_alu_or_push(self):
+        """ALU OR with push."""
+        opcode = CPU.encode_instruction(CPU.COND_ALWAYS, is_alu=True,
+                                        alu_op=CPU.ALU_OR, push=True)
+        cpu = self._make_cpu([0x00, opcode], sp=0x0100)
+        cpu._force_register(cpu.a_reg, 0x0F)
+        cpu._force_register(cpu.b_reg, 0xF0)
+        cpu.settle()
+        cpu.run_instruction()
+        assert cpu.read_a() == 0xFF
+        z, n, c = cpu.read_flags()
+        assert n is True  # MSB set
+
+    def test_sequential_instructions(self):
+        """Run two instructions in sequence."""
+        lda = CPU.encode_instruction(CPU.COND_ALWAYS, is_alu=False,
+                                     other_op=CPU.OTHER_LDA_IMM)
+        add = CPU.encode_instruction(CPU.COND_ALWAYS, is_alu=True,
+                                     alu_op=CPU.ALU_ADD, push=True)
+        # First: LDA 0x10; Second: ADD (push)
+        cpu = self._make_cpu([0x10, lda, 0x00, add], sp=0x0100)
+        cpu.run_instruction()  # LDA 0x10
+        assert cpu.read_a() == 0x10
+        assert cpu.read_pc() == 0x8002
+        # B got old A (which was 0 from reset), so A=0x10, B=0x00
+        cpu.run_instruction()  # ADD: A = A + B = 0x10 + 0x00 = 0x10
+        assert cpu.read_a() == 0x10
+        assert cpu.read_pc() == 0x8004
+
+    def test_condition_zero_set(self):
+        """Conditional on zero flag set."""
+        opcode = CPU.encode_instruction(CPU.COND_ZS, is_alu=False,
+                                        other_op=CPU.OTHER_LDA_IMM)
+        # Set zero flag: A - A = 0
+        cpu = self._make_cpu([0x42, opcode])
+        cpu._force_register(cpu.a_reg, 0x05)
+        cpu._force_register(cpu.b_reg, 0x05)
+        cpu.set_alu_op(CPU.ALU_SUB)
+        cpu.settle()
+        cpu.pulse_flag_latch()  # Z=1
+        cpu.run_instruction()
+        assert cpu.read_a() == 0x42  # executed
+
+    def test_condition_zero_clear(self):
+        """Conditional on zero flag clear."""
+        opcode = CPU.encode_instruction(CPU.COND_ZC, is_alu=False,
+                                        other_op=CPU.OTHER_LDA_IMM)
+        # Set zero flag: A - A = 0
+        cpu = self._make_cpu([0x42, opcode])
+        cpu._force_register(cpu.a_reg, 0x05)
+        cpu._force_register(cpu.b_reg, 0x05)
+        cpu.set_alu_op(CPU.ALU_SUB)
+        cpu.settle()
+        cpu.pulse_flag_latch()  # Z=1
+        cpu.run_instruction()
+        assert cpu.read_a() != 0x42  # did NOT execute
+
+    def test_condition_negative_set(self):
+        """Conditional on negative flag set."""
+        opcode = CPU.encode_instruction(CPU.COND_NS, is_alu=False,
+                                        other_op=CPU.OTHER_LDA_IMM)
+        cpu = self._make_cpu([0x42, opcode])
+        cpu._force_register(cpu.a_reg, 0x80)  # MSB set
+        cpu.set_alu_op(CPU.ALU_A)
+        cpu.settle()
+        cpu.pulse_flag_latch()  # N=1
+        cpu.run_instruction()
+        assert cpu.read_a() == 0x42  # executed
+
+    def test_nop_unimplemented(self):
+        """Unimplemented non-ALU instructions act as NOP."""
+        opcode = CPU.encode_instruction(CPU.COND_ALWAYS, is_alu=False,
+                                        other_op=15)
+        cpu = self._make_cpu([0x00, opcode])
+        cpu._force_register(cpu.a_reg, 0xAB)
+        cpu.settle()
+        cpu.run_instruction()
+        assert cpu.read_a() == 0xAB  # unchanged
+        assert cpu.read_pc() == 0x8002

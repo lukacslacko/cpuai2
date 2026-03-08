@@ -209,19 +209,19 @@ class CPU:
         pch2_tcu = c.create_net("PCH2_TCU")
         pch2_tcd = c.create_net("PCH2_TCD")
 
-        c.add_component(IC40193("PCL1",
+        self._pcl1 = c.add_component(IC40193("PCL1",
             self.data_bus[0:4], self.pc_l_int[0:4],
             self.pc_count_up, self.pc_count_down,
             self.latch_out[5], self.pc_mr, pcl1_tcu, pcl1_tcd))
-        c.add_component(IC40193("PCL2",
+        self._pcl2 = c.add_component(IC40193("PCL2",
             self.data_bus[4:8], self.pc_l_int[4:8],
             pcl1_tcu, pcl1_tcd,
             self.latch_out[5], self.pc_mr, pcl2_tcu, pcl2_tcd))
-        c.add_component(IC40193("PCH1",
+        self._pch1 = c.add_component(IC40193("PCH1",
             self.data_bus[0:4], self.pc_h_int[0:4],
             pcl2_tcu, pcl2_tcd,
             self.latch_out[4], self.pc_mr, pch1_tcu, pch1_tcd))
-        c.add_component(IC40193("PCH2",
+        self._pch2 = c.add_component(IC40193("PCH2",
             self.data_bus[4:8], self.pc_h_int[4:8],
             pch1_tcu, pch1_tcd,
             self.latch_out[4], self.pc_mr, pch2_tcu, pch2_tcd))
@@ -257,19 +257,19 @@ class CPU:
         sph2_tcu = c.create_net("SPH2_TCU")
         sph2_tcd = c.create_net("SPH2_TCD")
 
-        c.add_component(IC40193("SPL1",
+        self._spl1 = c.add_component(IC40193("SPL1",
             sp_dummy, self.sp_l_int[0:4],
             self.sp_count_up, self.sp_count_down,
             vcc, self.sp_mr, spl1_tcu, spl1_tcd))
-        c.add_component(IC40193("SPL2",
+        self._spl2 = c.add_component(IC40193("SPL2",
             sp_dummy, self.sp_l_int[4:8],
             spl1_tcu, spl1_tcd,
             vcc, self.sp_mr, spl2_tcu, spl2_tcd))
-        c.add_component(IC40193("SPH1",
+        self._sph1 = c.add_component(IC40193("SPH1",
             sp_dummy, self.sp_h_int[0:4],
             spl2_tcu, spl2_tcd,
             vcc, self.sp_mr, sph1_tcu, sph1_tcd))
-        c.add_component(IC40193("SPH2",
+        self._sph2 = c.add_component(IC40193("SPH2",
             sp_dummy, self.sp_h_int[4:8],
             sph1_tcu, sph1_tcd,
             vcc, self.sp_mr, sph2_tcu, sph2_tcd))
@@ -528,6 +528,26 @@ class CPU:
     def read_arg(self):
         return self._read_nets(self.arg_out)
 
+    # ASSERT demux select values
+    ASSERT_TMP = 0
+    ASSERT_ALU = 1
+    ASSERT_MEM = 2
+    ASSERT_PCH = 3
+    ASSERT_PCL = 4
+    ASSERT_SPH = 5
+    ASSERT_SPL = 6
+    ASSERT_ARG = 7
+
+    # LATCH demux select values
+    LATCH_I_ARG = 0
+    LATCH_A_B = 1
+    LATCH_H = 2
+    LATCH_L = 3
+    LATCH_PCH = 4
+    LATCH_PCL = 5
+    LATCH_MEM_WE = 6
+    LATCH_TMP = 7
+
     # ALU operations
     ALU_A = 0     # 000: passthrough A
     ALU_B = 1     # 001: passthrough B
@@ -543,6 +563,16 @@ class CPU:
     CTRL_PC_INC = 1
     CTRL_SP_DEC = 2
     CTRL_SP_INC = 3
+
+    # Condition codes (instruction bits 0-2)
+    COND_NEVER = 0
+    COND_ALWAYS = 1
+    COND_CS = 2    # carry set
+    COND_CC = 3    # carry clear
+    COND_ZS = 4    # zero set
+    COND_ZC = 5    # zero clear
+    COND_NS = 6    # negative set
+    COND_NC = 7    # negative clear
 
     # Microcode word bit positions
     UC_ASSERT = 0      # bits 0-2
@@ -691,3 +721,169 @@ class CPU:
         """Force a '574 register's latched value. For testing only."""
         for i in range(len(reg_574._latched)):
             reg_574._latched[i] = Signal.HIGH if (value >> i) & 1 else Signal.LOW
+
+    def _force_pc(self, value):
+        """Force the program counter to a 16-bit value. For testing only."""
+        self._pcl1._count = value & 0xF
+        self._pcl2._count = (value >> 4) & 0xF
+        self._pch1._count = (value >> 8) & 0xF
+        self._pch2._count = (value >> 12) & 0xF
+
+    def _force_sp(self, value):
+        """Force the stack pointer to a 16-bit value. For testing only."""
+        self._spl1._count = value & 0xF
+        self._spl2._count = (value >> 4) & 0xF
+        self._sph1._count = (value >> 8) & 0xF
+        self._sph2._count = (value >> 12) & 0xF
+
+    def run_instruction(self):
+        """Run ticks until END resets microPC to 0."""
+        while True:
+            self.tick()
+            if self.read_upc() == 0:
+                break
+
+    @staticmethod
+    def _check_condition(cond, z, n, c):
+        """Return True if condition is met given flag values."""
+        if cond == 0: return False   # never
+        if cond == 1: return True    # always
+        if cond == 2: return c == 1  # carry set
+        if cond == 3: return c == 0  # carry clear
+        if cond == 4: return z == 1  # zero set
+        if cond == 5: return z == 0  # zero clear
+        if cond == 6: return n == 1  # negative set
+        if cond == 7: return n == 0  # negative clear
+        return False
+
+    @staticmethod
+    def encode_instruction(cond, is_alu, alu_op=0, push=True, other_op=0):
+        """Encode an instruction byte.
+
+        For ALU (is_alu=True): bits 4-6 = alu_op, bit 7 = 0 if push, 1 if flags-only.
+        For other (is_alu=False): bits 4-7 = other_op.
+        """
+        opcode = cond & 7
+        if is_alu:
+            opcode |= (alu_op & 7) << 4
+            if not push:
+                opcode |= 1 << 7
+        else:
+            opcode |= 1 << 3
+            opcode |= (other_op & 0xF) << 4
+        return opcode
+
+    OTHER_LDA_IMM = 0
+    OTHER_PUSH_IMM = 1
+
+    def generate_microcode(self):
+        """Generate and load all microcode into the EEPROMs."""
+        MW = self.microcode_word
+
+        # Common prefix: steps 0-5, same for all instructions and flags.
+        # Memory layout: [argument] [opcode] at PC, PC+1.
+        # After prefix: I = opcode, ARG = argument, PC += 2.
+        prefix = [
+            # Step 0: PCL -> L
+            MW(assert_sel=self.ASSERT_PCL, latch_sel=self.LATCH_L),
+            # Step 1: PCH -> H
+            MW(assert_sel=self.ASSERT_PCH, latch_sel=self.LATCH_H),
+            # Step 2: MEM -> I (reads argument), PC++
+            MW(assert_sel=self.ASSERT_MEM, latch_sel=self.LATCH_I_ARG,
+               control=self.CTRL_PC_INC),
+            # Step 3: PCL -> L
+            MW(assert_sel=self.ASSERT_PCL, latch_sel=self.LATCH_L),
+            # Step 4: PCH -> H
+            MW(assert_sel=self.ASSERT_PCH, latch_sel=self.LATCH_H),
+            # Step 5: MEM -> I (reads opcode, old I=arg -> ARG), PC++
+            MW(assert_sel=self.ASSERT_MEM, latch_sel=self.LATCH_I_ARG,
+               control=self.CTRL_PC_INC),
+        ]
+
+        # Load prefix for all instructions and all flags
+        for instr in range(256):
+            for step, word in enumerate(prefix):
+                self.load_microcode(instr, step, word)
+
+        # Instruction-specific microcode (steps 6+)
+        for instr in range(256):
+            cond = instr & 7
+            is_other = (instr >> 3) & 1
+
+            for flags in range(8):
+                z = flags & 1
+                n = (flags >> 1) & 1
+                c = (flags >> 2) & 1
+
+                # Condition not met: just END
+                if not self._check_condition(cond, z, n, c):
+                    self.load_microcode(instr, 6,
+                        MW(end=True), flags=flags)
+                    continue
+
+                if not is_other:
+                    # ALU instruction
+                    alu_op = (instr >> 4) & 7
+                    push = not ((instr >> 7) & 1)
+
+                    if push:
+                        # Step 6: compute ALU, latch into A (old A->B), set flags
+                        self.load_microcode(instr, 6,
+                            MW(assert_sel=self.ASSERT_ALU,
+                               latch_sel=self.LATCH_A_B,
+                               alu_op=alu_op, flags_latch=True),
+                            flags=flags)
+                        # Step 7: SPL -> L
+                        self.load_microcode(instr, 7,
+                            MW(assert_sel=self.ASSERT_SPL,
+                               latch_sel=self.LATCH_L),
+                            flags=flags)
+                        # Step 8: SPH -> H
+                        self.load_microcode(instr, 8,
+                            MW(assert_sel=self.ASSERT_SPH,
+                               latch_sel=self.LATCH_H),
+                            flags=flags)
+                        # Step 9: ALU passthrough A -> MEM, SP--, END
+                        self.load_microcode(instr, 9,
+                            MW(assert_sel=self.ASSERT_ALU,
+                               latch_sel=self.LATCH_MEM_WE,
+                               alu_op=self.ALU_A,
+                               control=self.CTRL_SP_DEC, end=True),
+                            flags=flags)
+                    else:
+                        # Flags only: set ALU op, capture flags, END
+                        self.load_microcode(instr, 6,
+                            MW(alu_op=alu_op, flags_latch=True, end=True),
+                            flags=flags)
+
+                else:
+                    # Non-ALU instruction
+                    sub_op = (instr >> 4) & 0xF
+
+                    if sub_op == self.OTHER_LDA_IMM:
+                        # LDA immediate: ARG -> A (old A -> B), END
+                        self.load_microcode(instr, 6,
+                            MW(assert_sel=self.ASSERT_ARG,
+                               latch_sel=self.LATCH_A_B, end=True),
+                            flags=flags)
+
+                    elif sub_op == self.OTHER_PUSH_IMM:
+                        # PUSH immediate: SPL->L; SPH->H; ARG->MEM, SP--, END
+                        self.load_microcode(instr, 6,
+                            MW(assert_sel=self.ASSERT_SPL,
+                               latch_sel=self.LATCH_L),
+                            flags=flags)
+                        self.load_microcode(instr, 7,
+                            MW(assert_sel=self.ASSERT_SPH,
+                               latch_sel=self.LATCH_H),
+                            flags=flags)
+                        self.load_microcode(instr, 8,
+                            MW(assert_sel=self.ASSERT_ARG,
+                               latch_sel=self.LATCH_MEM_WE,
+                               control=self.CTRL_SP_DEC, end=True),
+                            flags=flags)
+
+                    else:
+                        # Unimplemented: NOP (just END)
+                        self.load_microcode(instr, 6,
+                            MW(end=True), flags=flags)
