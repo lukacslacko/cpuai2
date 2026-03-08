@@ -564,6 +564,11 @@ class CPU:
     CTRL_SP_DEC = 2
     CTRL_SP_INC = 3
 
+    # Address offset modes
+    OFFSET_NONE = 0       # passthrough H:L
+    OFFSET_ARG = 1        # H:L + ARG
+    OFFSET_ARG_PLUS1 = 2  # H:L + ARG + 1
+
     # Condition codes (instruction bits 0-2)
     COND_NEVER = 0
     COND_ALWAYS = 1
@@ -779,6 +784,12 @@ class CPU:
     OTHER_JMP = 3
     OTHER_CALL = 4
     OTHER_RET = 5
+    OTHER_LDASP = 6
+    OTHER_STASP = 7
+    OTHER_LDAB = 8
+    OTHER_STAB = 9
+    OTHER_POP = 10
+    OTHER_PUSHM = 11
 
     def generate_microcode(self):
         """Generate and load all microcode into the EEPROMs."""
@@ -987,6 +998,164 @@ class CPU:
                         self.load_microcode(instr, 12,
                             MW(assert_sel=self.ASSERT_MEM,
                                latch_sel=self.LATCH_PCH, end=True),
+                            flags=flags)
+
+                    elif sub_op == self.OTHER_LDASP:
+                        # LDA [SP+imm]: SPL->L; SPH->H; MEM->A, +ARG, END
+                        self.load_microcode(instr, 6,
+                            MW(assert_sel=self.ASSERT_SPL,
+                               latch_sel=self.LATCH_L),
+                            flags=flags)
+                        self.load_microcode(instr, 7,
+                            MW(assert_sel=self.ASSERT_SPH,
+                               latch_sel=self.LATCH_H),
+                            flags=flags)
+                        self.load_microcode(instr, 8,
+                            MW(assert_sel=self.ASSERT_MEM,
+                               latch_sel=self.LATCH_A_B,
+                               offset=self.OFFSET_ARG, end=True),
+                            flags=flags)
+
+                    elif sub_op == self.OTHER_STASP:
+                        # STA [SP+imm]: SPL->L; SPH->H; A->MEM, +ARG, END
+                        self.load_microcode(instr, 6,
+                            MW(assert_sel=self.ASSERT_SPL,
+                               latch_sel=self.LATCH_L),
+                            flags=flags)
+                        self.load_microcode(instr, 7,
+                            MW(assert_sel=self.ASSERT_SPH,
+                               latch_sel=self.LATCH_H),
+                            flags=flags)
+                        self.load_microcode(instr, 8,
+                            MW(assert_sel=self.ASSERT_ALU,
+                               latch_sel=self.LATCH_MEM_WE,
+                               alu_op=self.ALU_A,
+                               offset=self.OFFSET_ARG, end=True),
+                            flags=flags)
+
+                    elif sub_op == self.OTHER_LDAB:
+                        # LDAB [SP+imm]: SPL->L; SPH->H;
+                        #   MEM->A, +ARG; MEM->A, +ARG+1, END
+                        self.load_microcode(instr, 6,
+                            MW(assert_sel=self.ASSERT_SPL,
+                               latch_sel=self.LATCH_L),
+                            flags=flags)
+                        self.load_microcode(instr, 7,
+                            MW(assert_sel=self.ASSERT_SPH,
+                               latch_sel=self.LATCH_H),
+                            flags=flags)
+                        # Read low byte: A = MEM[SP+ARG], B = old A
+                        self.load_microcode(instr, 8,
+                            MW(assert_sel=self.ASSERT_MEM,
+                               latch_sel=self.LATCH_A_B,
+                               offset=self.OFFSET_ARG),
+                            flags=flags)
+                        # Read high byte: A = MEM[SP+ARG+1], B = low byte
+                        self.load_microcode(instr, 9,
+                            MW(assert_sel=self.ASSERT_MEM,
+                               latch_sel=self.LATCH_A_B,
+                               offset=self.OFFSET_ARG_PLUS1, end=True),
+                            flags=flags)
+
+                    elif sub_op == self.OTHER_STAB:
+                        # STAB [SP+imm]: SPL->L; SPH->H;
+                        #   B->MEM, +ARG; A->MEM, +ARG+1, END
+                        self.load_microcode(instr, 6,
+                            MW(assert_sel=self.ASSERT_SPL,
+                               latch_sel=self.LATCH_L),
+                            flags=flags)
+                        self.load_microcode(instr, 7,
+                            MW(assert_sel=self.ASSERT_SPH,
+                               latch_sel=self.LATCH_H),
+                            flags=flags)
+                        # Write B to [SP+ARG]
+                        self.load_microcode(instr, 8,
+                            MW(assert_sel=self.ASSERT_ALU,
+                               latch_sel=self.LATCH_MEM_WE,
+                               alu_op=self.ALU_B,
+                               offset=self.OFFSET_ARG),
+                            flags=flags)
+                        # Write A to [SP+ARG+1]
+                        self.load_microcode(instr, 9,
+                            MW(assert_sel=self.ASSERT_ALU,
+                               latch_sel=self.LATCH_MEM_WE,
+                               alu_op=self.ALU_A,
+                               offset=self.OFFSET_ARG_PLUS1, end=True),
+                            flags=flags)
+
+                    elif sub_op == self.OTHER_POP:
+                        # POP [AB+imm]: pop stack -> MEM[B:A+ARG]
+                        # Step 6: dummy SP++ (pre-increment)
+                        self.load_microcode(instr, 6,
+                            MW(assert_sel=self.ASSERT_TMP,
+                               latch_sel=self.LATCH_TMP,
+                               control=self.CTRL_SP_INC),
+                            flags=flags)
+                        # Step 7-8: load H:L from new SP
+                        self.load_microcode(instr, 7,
+                            MW(assert_sel=self.ASSERT_SPL,
+                               latch_sel=self.LATCH_L),
+                            flags=flags)
+                        self.load_microcode(instr, 8,
+                            MW(assert_sel=self.ASSERT_SPH,
+                               latch_sel=self.LATCH_H),
+                            flags=flags)
+                        # Step 9: MEM -> TMP (read popped value)
+                        self.load_microcode(instr, 9,
+                            MW(assert_sel=self.ASSERT_MEM,
+                               latch_sel=self.LATCH_TMP),
+                            flags=flags)
+                        # Step 10-11: set H:L = B:A
+                        self.load_microcode(instr, 10,
+                            MW(assert_sel=self.ASSERT_ALU,
+                               latch_sel=self.LATCH_L,
+                               alu_op=self.ALU_A),
+                            flags=flags)
+                        self.load_microcode(instr, 11,
+                            MW(assert_sel=self.ASSERT_ALU,
+                               latch_sel=self.LATCH_H,
+                               alu_op=self.ALU_B),
+                            flags=flags)
+                        # Step 12: TMP -> MEM[B:A+ARG], END
+                        self.load_microcode(instr, 12,
+                            MW(assert_sel=self.ASSERT_TMP,
+                               latch_sel=self.LATCH_MEM_WE,
+                               offset=self.OFFSET_ARG, end=True),
+                            flags=flags)
+
+                    elif sub_op == self.OTHER_PUSHM:
+                        # PUSH [AB+imm]: MEM[B:A+ARG] -> push to stack
+                        # Step 6-7: set H:L = B:A
+                        self.load_microcode(instr, 6,
+                            MW(assert_sel=self.ASSERT_ALU,
+                               latch_sel=self.LATCH_L,
+                               alu_op=self.ALU_A),
+                            flags=flags)
+                        self.load_microcode(instr, 7,
+                            MW(assert_sel=self.ASSERT_ALU,
+                               latch_sel=self.LATCH_H,
+                               alu_op=self.ALU_B),
+                            flags=flags)
+                        # Step 8: MEM[B:A+ARG] -> TMP
+                        self.load_microcode(instr, 8,
+                            MW(assert_sel=self.ASSERT_MEM,
+                               latch_sel=self.LATCH_TMP,
+                               offset=self.OFFSET_ARG),
+                            flags=flags)
+                        # Step 9-10: load H:L from SP
+                        self.load_microcode(instr, 9,
+                            MW(assert_sel=self.ASSERT_SPL,
+                               latch_sel=self.LATCH_L),
+                            flags=flags)
+                        self.load_microcode(instr, 10,
+                            MW(assert_sel=self.ASSERT_SPH,
+                               latch_sel=self.LATCH_H),
+                            flags=flags)
+                        # Step 11: TMP -> MEM[SP], SP--, END
+                        self.load_microcode(instr, 11,
+                            MW(assert_sel=self.ASSERT_TMP,
+                               latch_sel=self.LATCH_MEM_WE,
+                               control=self.CTRL_SP_DEC, end=True),
                             flags=flags)
 
                     else:

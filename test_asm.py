@@ -110,6 +110,7 @@ class TestPrograms:
         """Read a byte from RAM by asserting MEM."""
         cpu._force_register(cpu.h_reg, (addr >> 8) & 0xFF)
         cpu._force_register(cpu.l_reg, addr & 0xFF)
+        cpu.set_offset_ctrl(0)  # passthrough, no ARG offset
         cpu.settle()
         cpu.assert_enable.drive("ctrl", DriveState.HIGH)
         cpu.assert_sel[0].drive("ctrl", DriveState.LOW)
@@ -391,3 +392,113 @@ class TestPrograms:
         """, 5, sp=0x0100)
         assert cpu.read_sp() == 0x0100  # no push happened
         assert cpu.read_pc() == 0x800A  # continued past CALL
+
+    def test_ldasp(self):
+        """LDASP loads A from memory at SP+offset."""
+        cpu = self._run("""
+            PUSH 0xAA       ; stack[0x0100] = 0xAA, SP=0x00FF
+            PUSH 0xBB       ; stack[0x00FF] = 0xBB, SP=0x00FE
+            LDASP 2         ; A = MEM[SP+2] = MEM[0x0100] = 0xAA
+        """, 3, sp=0x0100)
+        assert cpu.read_a() == 0xAA
+
+    def test_ldasp_offset_1(self):
+        """LDASP with offset 1 reads top of stack."""
+        cpu = self._run("""
+            PUSH 0x42       ; stack[0x0100] = 0x42, SP=0x00FF
+            LDASP 1         ; A = MEM[SP+1] = MEM[0x0100] = 0x42
+        """, 2, sp=0x0100)
+        assert cpu.read_a() == 0x42
+
+    def test_stasp(self):
+        """STASP stores A to memory at SP+offset."""
+        cpu = self._run("""
+            PUSH 0x00       ; make room, SP=0x00FF
+            PUSH 0x00       ; make room, SP=0x00FE
+            LDA 0x77
+            STASP 1         ; MEM[SP+1] = MEM[0x00FF] = 0x77
+        """, 4, sp=0x0100)
+        assert self._read_ram(cpu, 0x00FF) == 0x77
+
+    def test_ldab(self):
+        """LDAB loads 16-bit value: B=MEM[SP+ARG], A=MEM[SP+ARG+1]."""
+        cpu = self._run("""
+            PUSH 0x12       ; stack[0x0100] = 0x12 (high), SP=0x00FF
+            PUSH 0x34       ; stack[0x00FF] = 0x34 (low), SP=0x00FE
+            LDAB 1          ; B=MEM[SP+1]=0x34, A=MEM[SP+2]=0x12
+        """, 3, sp=0x0100)
+        assert cpu.read_a() == 0x12
+        assert cpu.read_b() == 0x34
+
+    def test_stab(self):
+        """STAB stores B to [SP+ARG], A to [SP+ARG+1]."""
+        cpu = self._run("""
+            PUSH 0x00       ; room, SP=0x00FF
+            PUSH 0x00       ; room, SP=0x00FE
+            LDA 0xAA        ; A=0xAA (will be B after next LDA)
+            LDA 0xBB        ; A=0xBB, B=0xAA
+            STAB 1          ; MEM[SP+1]=B=0xAA, MEM[SP+2]=A=0xBB
+        """, 5, sp=0x0100)
+        assert self._read_ram(cpu, 0x00FF) == 0xAA  # B at SP+1
+        assert self._read_ram(cpu, 0x0100) == 0xBB  # A at SP+2
+
+    def test_ldab_stab_roundtrip(self):
+        """STAB then LDAB should recover the same A:B values."""
+        cpu = self._run("""
+            PUSH 0x00       ; room
+            PUSH 0x00       ; room
+            LDA 0xDE        ; will become B
+            LDA 0xAD        ; A=0xAD, B=0xDE
+            STAB 1          ; store B:A to stack
+            LDA 0x00        ; clear A
+            LDA 0x00        ; clear A and B
+            LDAB 1          ; reload: B=0xDE, A=0xAD
+        """, 8, sp=0x0100)
+        assert cpu.read_a() == 0xAD
+        assert cpu.read_b() == 0xDE
+
+    def test_pop(self):
+        """POP pops from stack into MEM[B:A+offset]."""
+        cpu = self._run("""
+            PUSH 0x42       ; stack[0x0100] = 0x42, SP=0x00FF
+            LDA 0x02        ; A=0x02 (will be B=addr high)
+            LDA 0x00        ; A=0x00 (addr low), B=0x02
+            POP 5           ; pop 0x42, write to MEM[0x0200+5]=MEM[0x0205]
+        """, 4, sp=0x0100)
+        assert cpu.read_sp() == 0x0100  # SP restored after pop
+        assert self._read_ram(cpu, 0x0205) == 0x42
+
+    def test_pushm(self):
+        """PUSHM reads MEM[B:A+offset] and pushes to stack."""
+        cpu = self._run("""
+            PUSH 0x42       ; put 0x42 at 0x0100
+            LDA 0x01        ; will become B (addr high)
+            LDA 0x00        ; A=0x00, B=0x01
+            PUSHM 0         ; read MEM[0x0100+0]=0x42, push to stack
+        """, 4, sp=0x0100)
+        # After PUSH 0x42: SP=0x00FF, stack[0x0100]=0x42
+        # After PUSHM: reads from 0x0100 (=0x42), pushes to stack[0x00FF], SP=0x00FE
+        assert cpu.read_sp() == 0x00FE
+        assert self._read_ram(cpu, 0x00FF) == 0x42
+
+    def test_pushm_pop_roundtrip(self):
+        """PUSHM then POP: read from memory, push, pop back elsewhere."""
+        cpu = self._run("""
+            ; Store 0xEE at address 0x0050
+            LDA 0x00        ; B=0x00 (addr high)
+            LDA 0x50        ; A=0x50 (addr low), B=0x00
+            PUSH 0xEE       ; stack[0x0100]=0xEE, SP=0x00FF
+            LDA 0x00        ; set up addr again
+            LDA 0x50
+            POP 0           ; pop 0xEE -> MEM[0x0050]
+            ; Now push it back from MEM[0x0050]
+            LDA 0x00
+            LDA 0x50
+            PUSHM 0         ; read MEM[0x0050]=0xEE, push
+            ; Pop and store elsewhere at 0x0060
+            LDA 0x00
+            LDA 0x60
+            POP 0           ; pop 0xEE -> MEM[0x0060]
+        """, 12, sp=0x0100)
+        assert self._read_ram(cpu, 0x0050) == 0xEE
+        assert self._read_ram(cpu, 0x0060) == 0xEE
