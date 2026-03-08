@@ -102,21 +102,18 @@ class CPU:
             self.latch_out[3], gnd))
 
         # === I register (instruction) ===
-        # Latches from data bus on ILATCH, always outputs to i_out
-        self.ilatch = c.create_net("ILATCH")
-        self.ilatch.drive("ctrl", DriveState.LOW)  # idle low
-
+        # Latches from data bus on LATCH[0], always outputs to i_out
         self.i_out = [c.create_net(f"I_OUT{i}") for i in range(8)]
         self.i_reg = c.add_component(IC74574("I",
             self.data_bus, self.i_out,
-            self.ilatch, gnd))
+            self.latch_out[0], gnd))
 
         # === ARG register ===
-        # Latches from I's outputs on ILATCH, always outputs to arg_out
+        # Latches from I's outputs on LATCH[0], always outputs to arg_out
         self.arg_out = [c.create_net(f"ARG_OUT{i}") for i in range(8)]
         self.arg_reg = c.add_component(IC74574("ARG",
             self.i_out, self.arg_out,
-            self.ilatch, gnd))
+            self.latch_out[0], gnd))
 
         # ARG_DATA buffer: arg_out -> data bus, OE=ASSERT[7]
         c.add_component(IC74573("ARG_DATA",
@@ -396,10 +393,95 @@ class CPU:
             flag_inputs, self.flag_out,
             self.flag_latch, gnd))
 
+        # === Microcode (1x 40193 + 2x 28256 + 1x 74138) ===
+        #
+        # Microcode ROM address (15 bits):
+        #   A[0..3]  = microPC (4 bits)
+        #   A[4..11] = I register (8 bits, always output)
+        #   A[12..14]= flags Z, N, C (3 bits from flag register)
+        #
+        # Microcode word (15 bits of 16):
+        #   [0..2]   ASSERT select (which component drives data bus)
+        #   [3..5]   LATCH select (which component latches from data bus)
+        #   [6..8]   ALU op
+        #   [9..10]  OFFSET mode
+        #   [11..12] CONTROL (0=nop, 1=PC++, 2=SP--, 3=SP++)
+        #   [13]     END (reset microPC to 0)
+        #   [14]     FLAGS_LATCH
+
+        # Master clock net (gates all demuxes)
+        self.clk = c.create_net("CLK")
+        self.clk.drive("ctrl", DriveState.LOW)  # idle low
+
+        # MicroPC counter (single 40193, 4 bits)
+        self.micro_clk = c.create_net("MICRO_CLK")
+        self.micro_clk.drive("ctrl", DriveState.HIGH)  # idle high
+        micro_cpd = c.create_net("MICRO_CPD")
+        micro_cpd.drive("rail", DriveState.HIGH)
+        micro_pl = c.create_net("MICRO_PL")
+        micro_pl.drive("rail", DriveState.HIGH)
+        self.micro_mr = c.create_net("MICRO_MR")
+        self.micro_mr.drive("ctrl", DriveState.HIGH)  # start in reset
+        self.upc_out = [c.create_net(f"UPC{i}") for i in range(4)]
+        micro_tcu = c.create_net("MICRO_TCU")
+        micro_tcd = c.create_net("MICRO_TCD")
+        micro_dummy = [c.create_net(f"MICRO_D{i}") for i in range(4)]
+        for d in micro_dummy:
+            d.drive("rail", DriveState.LOW)
+        c.add_component(IC40193("UPC",
+            micro_dummy, self.upc_out,
+            self.micro_clk, micro_cpd,
+            micro_pl, self.micro_mr, micro_tcu, micro_tcd))
+
+        # Microcode ROM address bus (15 bits)
+        uc_addr = (self.upc_out +         # A[0..3]  = microPC
+                   self.i_out +            # A[4..11] = I register
+                   self.flag_out[0:3])     # A[12..14]= Z, N, C
+
+        # Microcode data buses (directly driven by ROMs)
+        self.uc_lo_bus = [c.create_net(f"UC_LO{i}") for i in range(8)]
+        self.uc_hi_bus = [c.create_net(f"UC_HI{i}") for i in range(8)]
+
+        # Two 28256 ROMs for 16-bit microcode word
+        self.ucode_lo = c.add_component(IC28256("UCODE_LO",
+            uc_addr, self.uc_lo_bus, gnd, gnd))
+        self.ucode_hi = c.add_component(IC28256("UCODE_HI",
+            uc_addr, self.uc_hi_bus, gnd, gnd))
+
+        # CONTROL demux (74138): decodes control field for PC/SP actions
+        # Y0=nop, Y1=PC++, Y2=SP--, Y3=SP++
+        # G1=CLK (only active during clock HIGH phase)
+        ctrl_c = c.create_net("CTRL_DEMUX_C")
+        ctrl_c.drive("rail", DriveState.LOW)
+        ctrl_g2a = c.create_net("CTRL_G2A")
+        ctrl_g2a.drive("rail", DriveState.LOW)
+        ctrl_g2b = c.create_net("CTRL_G2B")
+        ctrl_g2b.drive("rail", DriveState.LOW)
+        # Y0=nop, Y1=PC_COUNT_UP, Y2=SP_COUNT_DOWN, Y3=SP_COUNT_UP,
+        # Y4-Y7 unused (always HIGH when CLK=HIGH and not selected)
+        ctrl_y0 = c.create_net("CTRL_Y0")
+        ctrl_unused = [c.create_net(f"CTRL_Y{i}") for i in range(4, 8)]
+        self.ctrl_out = [ctrl_y0, self.pc_count_up, self.sp_count_down,
+                         self.sp_count_up] + ctrl_unused
+        c.add_component(IC74138("CONTROL",
+            self.uc_hi_bus[3], self.uc_hi_bus[4], ctrl_c,
+            self.clk, ctrl_g2a, ctrl_g2b, self.ctrl_out))
+
+        # CONTROL demux outputs are the PC/SP count signals directly.
+        # Y1 = PC_COUNT_UP, Y2 = SP_COUNT_DOWN, Y3 = SP_COUNT_UP
+        # When CLK=LOW (idle): all Y=HIGH (idle for counters).
+        # When CLK=HIGH and control=1: Y1 goes LOW. On CLK->LOW: Y1
+        # goes HIGH (rising edge -> PC counts up). Same for SP.
+        # Remove "ctrl" drivers; CONTROL demux is now the sole driver.
+        self.pc_count_up.drive("ctrl", DriveState.HI_Z)
+        self.sp_count_down.drive("ctrl", DriveState.HI_Z)
+        self.sp_count_up.drive("ctrl", DriveState.HI_Z)
+
         # === Initialization: reset counters, then settle ===
         c.settle()
         self.pc_mr.drive("ctrl", DriveState.LOW)
         self.sp_mr.drive("ctrl", DriveState.LOW)
+        self.micro_mr.drive("ctrl", DriveState.LOW)
         c.settle()
 
     # --- Helper methods ---
@@ -456,6 +538,21 @@ class CPU:
     ALU_XOR = 6   # 110: A ^ B
     ALU_SHIFT = 7 # 111: shift A by B
 
+    # CONTROL demux actions
+    CTRL_NOP = 0
+    CTRL_PC_INC = 1
+    CTRL_SP_DEC = 2
+    CTRL_SP_INC = 3
+
+    # Microcode word bit positions
+    UC_ASSERT = 0      # bits 0-2
+    UC_LATCH = 3       # bits 3-5
+    UC_ALU = 6         # bits 6-8
+    UC_OFFSET = 9      # bits 9-10
+    UC_CONTROL = 11    # bits 11-12
+    UC_END = 13        # bit 13
+    UC_FLAGS = 14      # bit 14
+
     def set_alu_op(self, op):
         """Set ALU operation (0-7)."""
         for i in range(3):
@@ -475,6 +572,113 @@ class CPU:
         self.settle()
         self.flag_latch.drive("ctrl", DriveState.LOW)
         self.settle()
+
+    def read_upc(self):
+        """Read the current microPC value."""
+        return self._read_nets(self.upc_out)
+
+    def _read_uc_word(self):
+        """Read the current 16-bit microcode word from the uc bus nets."""
+        lo = self._read_nets(self.uc_lo_bus)
+        hi = self._read_nets(self.uc_hi_bus)
+        return lo | (hi << 8)
+
+    @staticmethod
+    def microcode_word(assert_sel=0, latch_sel=0, alu_op=0, offset=0,
+                       control=0, end=False, flags_latch=False):
+        """Build a 16-bit microcode word from field values."""
+        return ((assert_sel & 7) |
+                ((latch_sel & 7) << 3) |
+                ((alu_op & 7) << 6) |
+                ((offset & 3) << 9) |
+                ((control & 3) << 11) |
+                ((1 if end else 0) << 13) |
+                ((1 if flags_latch else 0) << 14))
+
+    def load_microcode(self, instruction, step, word, flags=None):
+        """Load a microcode word for a given instruction and step.
+
+        If flags is None, writes to all 8 flag combinations.
+        If flags is an int (0-7), writes to that specific flag combo only.
+        """
+        if flags is None:
+            flag_range = range(8)
+        else:
+            flag_range = [flags]
+        lo_byte = word & 0xFF
+        hi_byte = (word >> 8) & 0xFF
+        for f in flag_range:
+            addr = step | (instruction << 4) | (f << 12)
+            self.ucode_lo.load(addr, [lo_byte])
+            self.ucode_hi.load(addr, [hi_byte])
+
+    def tick(self):
+        """Execute one microcode step.
+
+        1. Microcode ROM outputs are already driving uc bus from current address
+        2. Apply ASSERT/LATCH/ALU/OFFSET from uc bus via ctrl drivers
+        3. CLK HIGH: enable ASSERT, LATCH, CONTROL demuxes
+        4. CLK LOW: disable demuxes (rising edges trigger latches/counts)
+        5. Pulse FLAGS_LATCH if set
+        6. END: reset microPC; else advance microPC
+        """
+        # Settle so ROM outputs reflect current address
+        self.settle()
+        # Read current microcode word
+        uc = self._read_uc_word()
+        assert_sel = uc & 7
+        latch_sel = (uc >> 3) & 7
+        alu_op = (uc >> 6) & 7
+        offset = (uc >> 9) & 3
+        end = bool(uc & (1 << 13))
+        flags_latch = bool(uc & (1 << 14))
+
+        # Apply control fields via "ctrl" drivers
+        for i in range(3):
+            self.assert_sel[i].drive("ctrl",
+                DriveState.HIGH if (assert_sel >> i) & 1 else DriveState.LOW)
+            self.latch_sel[i].drive("ctrl",
+                DriveState.HIGH if (latch_sel >> i) & 1 else DriveState.LOW)
+            self.alu_op[i].drive("ctrl",
+                DriveState.HIGH if (alu_op >> i) & 1 else DriveState.LOW)
+        for i in range(2):
+            self.offset_ctrl[i].drive("ctrl",
+                DriveState.HIGH if (offset >> i) & 1 else DriveState.LOW)
+
+        # Phase 1: CLK HIGH - enable demuxes (data on bus, flags valid)
+        self.assert_enable.drive("ctrl", DriveState.HIGH)
+        self.latch_enable.drive("ctrl", DriveState.HIGH)
+        self.clk.drive("ctrl", DriveState.HIGH)
+        self.settle()
+
+        # Pulse FLAGS_LATCH while ALU inputs (A, B) are still unchanged
+        if flags_latch:
+            self.flag_latch.drive("ctrl", DriveState.HIGH)
+            self.settle()
+            self.flag_latch.drive("ctrl", DriveState.LOW)
+            self.settle()
+
+        # Phase 2a: Disable LATCH first (rising edge triggers 574 latch
+        # while ASSERT still drives data onto bus)
+        self.latch_enable.drive("ctrl", DriveState.LOW)
+        self.settle()
+
+        # Phase 2b: Then disable ASSERT and CLK (release bus, trigger counters)
+        self.assert_enable.drive("ctrl", DriveState.LOW)
+        self.clk.drive("ctrl", DriveState.LOW)
+        self.settle()
+
+        # Advance or reset microPC
+        if end:
+            self.micro_mr.drive("ctrl", DriveState.HIGH)
+            self.settle()
+            self.micro_mr.drive("ctrl", DriveState.LOW)
+            self.settle()
+        else:
+            self.micro_clk.drive("ctrl", DriveState.LOW)
+            self.settle()
+            self.micro_clk.drive("ctrl", DriveState.HIGH)
+            self.settle()
 
     def set_offset_ctrl(self, mode):
         """Set offset mode: 0=passthrough, 1=ARG, 2=ARG+1."""

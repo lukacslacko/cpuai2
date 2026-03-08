@@ -101,6 +101,154 @@ The WinCUPL PLD source files are in the `gal/` directory:
    ```
    Label each programmed chip to match its position in the circuit.
 
+## Microcode
+
+Each instruction executes as a sequence of microcode steps. A 40193
+counter provides a 4-bit microPC (up to 16 steps per instruction). Two
+28256 EEPROMs store the 16-bit microcode word, addressed by:
+
+```
+A[0..3]   = microPC   (4 bits, current step)
+A[4..11]  = I register (8 bits, current instruction opcode)
+A[12..14] = flags Z, N, C (3 bits, enabling conditional branching)
+```
+
+### Microcode word format
+
+```
+Bit  Field         Width  Purpose
+0-2  ASSERT        3      Select data bus driver
+3-5  LATCH         3      Select data bus receiver
+6-8  ALU_OP        3      ALU operation select
+9-10 OFFSET        2      Address offset mode
+11-12 CONTROL      2      Counter action (0=nop, 1=PC++, 2=SP--, 3=SP++)
+13   END           1      Reset microPC to 0 (end of instruction)
+14   FLAGS_LATCH   1      Pulse flag register latch
+15   (unused)      1
+```
+
+### ASSERT demux (active-low outputs drive buffer OE pins)
+
+| Code | Source | Description |
+|------|--------|-------------|
+| 0 | TMP | Temporary register |
+| 1 | ALU | ALU/shifter result |
+| 2 | MEM | RAM or ROM at address H:L+offset |
+| 3 | PCH | Program counter high byte |
+| 4 | PCL | Program counter low byte |
+| 5 | SPH | Stack pointer high byte |
+| 6 | SPL | Stack pointer low byte |
+| 7 | ARG | Argument register |
+
+### LATCH demux (active-low outputs drive register CLK or WE pins)
+
+| Code | Target | Description |
+|------|--------|-------------|
+| 0 | I+ARG | Instruction register (from bus) and ARG (from old I) |
+| 1 | A+B | A register (from bus) and B (from old A) |
+| 2 | H | Address high byte |
+| 3 | L | Address low byte |
+| 4 | PCH | Program counter high byte (parallel load) |
+| 5 | PCL | Program counter low byte (parallel load) |
+| 6 | MEM WE | RAM write enable |
+| 7 | TMP | Temporary register |
+
+## Execution phases
+
+The `tick()` method executes one microcode step. The timing is split
+into distinct phases to match the physical behaviour of the hardware,
+where edge-triggered latches must capture data while it is still being
+driven onto the bus.
+
+### Phase 0: Settle and decode
+
+The circuit is settled so that the microcode ROM outputs reflect the
+current address (microPC + I + flags). The 16-bit microcode word is
+then read from the ROM data buses and decoded into its fields: ASSERT,
+LATCH, ALU_OP, OFFSET, CONTROL, END, and FLAGS_LATCH. The decoded
+values are applied to the select lines of the ASSERT demux, LATCH
+demux, and ALU operation inputs.
+
+### Phase 1: CLK HIGH — enable demuxes and drive data
+
+CLK, ASSERT_EN, and LATCH_EN are all driven HIGH. The circuit settles:
+
+- The **ASSERT demux** activates its selected output (driving it LOW),
+  which enables the corresponding tri-state buffer. The selected
+  component (ALU, memory, register, etc.) drives its value onto the
+  8-bit data bus.
+- The **LATCH demux** activates its selected output (driving it LOW).
+  For 74574 edge-triggered registers this is the CLK pin being held
+  LOW — no latch occurs yet (the 74574 triggers on a rising edge).
+  For the RAM write-enable (LATCH=6) the active-low WE is asserted.
+- The **CONTROL demux** (gated by CLK) activates its selected output.
+  If CONTROL=1, PC_COUNT_UP is driven LOW. If CONTROL=2 or 3,
+  SP_COUNT_DOWN or SP_COUNT_UP is driven LOW. The 40193 counters
+  trigger on a rising edge, so nothing happens yet.
+- The **ALU** computes its result combinationally from A, B, and
+  ALU_OP. The output buffers (controlled by the ASSERT demux via
+  GAL_ALU_FLAGS) drive the result onto the data bus if ASSERT=1.
+  The flag signals (Z, N, C) are valid on the GAL outputs.
+
+### Phase 1b: FLAGS_LATCH pulse (conditional)
+
+If the FLAGS_LATCH bit is set, the flag register's CLK is pulsed
+HIGH then LOW while ALU inputs A and B still hold their original
+values. This captures the correct flags for the current operation
+before the register latch in Phase 2a potentially changes A.
+
+### Phase 2a: Disable LATCH — trigger register capture
+
+LATCH_EN is driven LOW while ASSERT_EN remains HIGH. The LATCH demux
+becomes disabled, forcing all its outputs HIGH. The selected output
+transitions LOW→HIGH, which is a **rising edge** on the target
+register's CLK pin. The 74574 captures whatever is on its data inputs
+at this moment. Because ASSERT is still active, the source component
+is still driving valid data onto the bus, guaranteeing the register
+latches the correct value.
+
+For LATCH=1 (A+B), both A and B share the same CLK line. A latches
+from the data bus, and B simultaneously latches from A's outputs
+(capturing A's old value before it updates).
+
+### Phase 2b: Disable ASSERT and CLK — release bus, trigger counters
+
+ASSERT_EN and CLK are both driven LOW. The ASSERT demux becomes
+disabled (all outputs HIGH), so all tri-state buffers release the data
+bus (it returns to floating). The CONTROL demux (gated by CLK as G1)
+also becomes disabled, forcing its outputs HIGH. If a counter's clock
+input was being held LOW (e.g., PC_COUNT_UP during CONTROL=1), it now
+transitions LOW→HIGH — a **rising edge** that increments or decrements
+the counter.
+
+### Phase 3: Advance microPC
+
+If the END bit is set, the microPC is reset to 0 by pulsing
+MICRO_MR (master reset), preparing for the next instruction's fetch
+cycle. Otherwise, MICRO_CLK is pulsed LOW then HIGH (rising edge on
+the 40193 count-up input) to advance the microPC to the next step.
+
+### Timing diagram
+
+```
+                 Phase 0  |  Phase 1   | 1b (opt) | Phase 2a | Phase 2b | Phase 3
+                          |            |          |          |          |
+CLK          _____________/‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾\__________
+ASSERT_EN    _____________/‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾\____
+LATCH_EN     _____________/‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾\____________________
+                          |            |          |          |          |
+LATCH_Yn     ‾‾‾‾‾‾‾‾‾‾‾‾‾\__________↓__________/‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
+                          |            |    ↑ rising edge    |          |
+                          |            | captures data      |          |
+ASSERT_Yn    ‾‾‾‾‾‾‾‾‾‾‾‾‾\____________________________________/‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
+                          |  data valid on bus ───────────────|→        |
+FLAGS_LATCH  _________________________/‾‾‾‾‾\___________________________________
+                          |            |  ↑ captures flags   |          |
+CTRL_Yn      ‾‾‾‾‾‾‾‾‾‾‾‾‾\_____________________________________/‾‾‾‾‾‾‾‾‾‾‾‾‾
+                          |            |          |          | ↑ rising edge
+                          |            |          |          | triggers counter
+```
+
 ## Build Instructions
 
 The file [`BUILD.md`](BUILD.md) contains the full component list and
