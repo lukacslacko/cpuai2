@@ -1,0 +1,90 @@
+Name     ALU_LO;
+PartNo   04;
+Date     2026-03-08;
+Revision 01;
+Designer cpuai2;
+Company  ;
+Assembly ;
+Location ;
+Device   g22v10;
+
+/* ============================================================ */
+/*  ALU low nibble (bits 0-3)                                    */
+/*  Operations: A, B, ADD, SUB, AND, OR, XOR, (shift=0)         */
+/* ============================================================ */
+
+/* Input pins */
+PIN 2  = A0;
+PIN 3  = A1;
+PIN 4  = A2;
+PIN 5  = A3;
+PIN 6  = B0;
+PIN 7  = B1;
+PIN 8  = B2;
+PIN 9  = B3;
+PIN 10 = OP0;
+PIN 11 = OP1;
+PIN 13 = OP2;
+
+/* Output pins */
+PIN 23 = R0;   /*  8 product terms */
+PIN 22 = R1;   /* 10 product terms */
+PIN 21 = R2;   /* 12 product terms */
+PIN 20 = R3;   /* 14 product terms */
+PIN 19 = C4;   /* 16 product terms */
+PIN 18 = ZLO;  /* 16 product terms */
+
+/* Operation decode */
+IS_A   = !OP2 & !OP1 & !OP0;  /* 000 */
+IS_B   = !OP2 & !OP1 &  OP0;  /* 001 */
+IS_ADD = !OP2 &  OP1 & !OP0;  /* 010 */
+IS_SUB = !OP2 &  OP1 &  OP0;  /* 011 */
+IS_AND =  OP2 & !OP1 & !OP0;  /* 100 */
+IS_OR  =  OP2 & !OP1 &  OP0;  /* 101 */
+IS_XOR =  OP2 &  OP1 & !OP0;  /* 110 */
+
+/* Effective B for adder: B when ADD, ~B when SUB */
+EB0 = IS_ADD & B0 # IS_SUB & !B0;
+EB1 = IS_ADD & B1 # IS_SUB & !B1;
+EB2 = IS_ADD & B2 # IS_SUB & !B2;
+EB3 = IS_ADD & B3 # IS_SUB & !B3;
+
+/* Carry in: 1 for SUB (two's complement) */
+CIN = IS_SUB;
+
+/* Full adder chain - bit 0 */
+SUM0 = A0 $ EB0 $ CIN;
+G0 = A0 & EB0;
+P0 = A0 $ EB0;
+CC0 = G0 # P0 & CIN;
+
+/* Full adder chain - bit 1 */
+SUM1 = A1 $ EB1 $ CC0;
+G1 = A1 & EB1;
+P1 = A1 $ EB1;
+CC1 = G1 # P1 & CC0;
+
+/* Full adder chain - bit 2 */
+SUM2 = A2 $ EB2 $ CC1;
+G2 = A2 & EB2;
+P2 = A2 $ EB2;
+CC2 = G2 # P2 & CC1;
+
+/* Full adder chain - bit 3 */
+SUM3 = A3 $ EB3 $ CC2;
+G3 = A3 & EB3;
+P3 = A3 $ EB3;
+C4 = G3 # P3 & CC2;
+
+/* Result mux per bit */
+R0 = IS_A & A0 # IS_B & B0 # (IS_ADD # IS_SUB) & SUM0
+   # IS_AND & A0 & B0 # IS_OR & (A0 # B0) # IS_XOR & (A0 $ B0);
+R1 = IS_A & A1 # IS_B & B1 # (IS_ADD # IS_SUB) & SUM1
+   # IS_AND & A1 & B1 # IS_OR & (A1 # B1) # IS_XOR & (A1 $ B1);
+R2 = IS_A & A2 # IS_B & B2 # (IS_ADD # IS_SUB) & SUM2
+   # IS_AND & A2 & B2 # IS_OR & (A2 # B2) # IS_XOR & (A2 $ B2);
+R3 = IS_A & A3 # IS_B & B3 # (IS_ADD # IS_SUB) & SUM3
+   # IS_AND & A3 & B3 # IS_OR & (A3 # B3) # IS_XOR & (A3 $ B3);
+
+/* Zero detect for low nibble */
+ZLO = !R0 & !R1 & !R2 & !R3;

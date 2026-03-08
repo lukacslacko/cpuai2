@@ -1,0 +1,54 @@
+Name     ALU_FLAGS;
+PartNo   08;
+Date     2026-03-08;
+Revision 01;
+Designer cpuai2;
+Company  ;
+Assembly ;
+Location ;
+Device   g22v10;
+
+/* ============================================================ */
+/*  ALU output enable and flag computation                       */
+/*  Generates OE signals for arith/shift output buffers          */
+/*  Computes Z, N, C flags from ALU results                      */
+/* ============================================================ */
+
+/* Input pins */
+PIN 2  = OP0;
+PIN 3  = OP1;
+PIN 4  = OP2;
+PIN 5  = ASEN;    /* ASSERT[1] active-low output */
+PIN 6  = C8;      /* Carry out from ALU_HI */
+PIN 7  = ZLO;     /* Low nibble zero from ALU_LO */
+PIN 8  = ZHI;     /* High nibble zero from ALU_HI */
+PIN 9  = SZLO;    /* Shift low nibble zero from SHIFT_LO */
+PIN 10 = SZHI;    /* Shift high nibble zero from SHIFT_HI */
+PIN 11 = R7;      /* MSB of arith result (negative) */
+PIN 13 = S7;      /* MSB of shift result (negative) */
+
+/* Output pins */
+PIN 23 = ALU_OE;  /*  8 pt - active low: enables arith buffer */
+PIN 22 = SH_OE;   /* 10 pt - active low: enables shift buffer */
+PIN 21 = FZ;      /* 12 pt - Zero flag */
+PIN 20 = FN;      /* 14 pt - Negative flag */
+PIN 19 = FC;      /* 16 pt - Carry flag */
+
+/* Shift operation decode */
+IS_SHIFT = OP2 & OP1 & OP0;  /* 111 */
+
+/* Output enables: active low, depend on ASSERT[1] and operation */
+/* ALU_OE = LOW when ASEN=LOW (asserted) and not shift */
+ALU_OE = ASEN # IS_SHIFT;
+
+/* SH_OE = LOW when ASEN=LOW (asserted) and is shift */
+SH_OE = ASEN # !OP2 # !OP1 # !OP0;
+
+/* Zero flag: all result bits zero */
+FZ = IS_SHIFT & SZLO & SZHI # !IS_SHIFT & ZLO & ZHI;
+
+/* Negative flag: MSB of result */
+FN = IS_SHIFT & S7 # !IS_SHIFT & R7;
+
+/* Carry flag: only meaningful for ADD (010) and SUB (011) */
+FC = !OP2 & OP1 & C8;

@@ -1,0 +1,81 @@
+Name     SHIFT_LO;
+PartNo   06;
+Date     2026-03-08;
+Revision 01;
+Designer cpuai2;
+Company  ;
+Assembly ;
+Location ;
+Device   g22v10;
+
+/* ============================================================ */
+/*  Barrel shifter - low nibble (bits 0-3)                       */
+/*  Shift A by amount B[0..2], direction B[3] (0=right, 1=left) */
+/*  Zero-fill (logical shift, not rotate)                        */
+/*  Each output is an 8-to-1 mux selecting from A[0..7]          */
+/*  Max 8 product terms per output - fits all GAL22V10 pins      */
+/* ============================================================ */
+
+/* Input pins */
+PIN 1  = A0;
+PIN 2  = A1;
+PIN 3  = A2;
+PIN 4  = A3;
+PIN 5  = A4;
+PIN 6  = A5;
+PIN 7  = A6;
+PIN 8  = A7;
+PIN 9  = AMT0;
+PIN 10 = AMT1;
+PIN 11 = AMT2;
+PIN 13 = DIR;
+
+/* Output pins */
+PIN 23 = S0;   /*  8 product terms */
+PIN 22 = S1;   /* 10 product terms */
+PIN 21 = S2;   /* 12 product terms */
+PIN 20 = S3;   /* 14 product terms */
+PIN 19 = SZLO; /* 16 product terms */
+
+/* S0: right-shift sources A[0+N], left-shift only amt=0 gives A0 */
+S0 = !AMT2 & !AMT1 & !AMT0 & A0
+   # !DIR & !AMT2 & !AMT1 &  AMT0 & A1
+   # !DIR & !AMT2 &  AMT1 & !AMT0 & A2
+   # !DIR & !AMT2 &  AMT1 &  AMT0 & A3
+   # !DIR &  AMT2 & !AMT1 & !AMT0 & A4
+   # !DIR &  AMT2 & !AMT1 &  AMT0 & A5
+   # !DIR &  AMT2 &  AMT1 & !AMT0 & A6
+   # !DIR &  AMT2 &  AMT1 &  AMT0 & A7;
+
+/* S1: right-shift sources A[1+N] (N=0..6), left-shift A[1-N] (N=0..1) */
+S1 = !AMT2 & !AMT1 & !AMT0 & A1
+   #  DIR & !AMT2 & !AMT1 &  AMT0 & A0
+   # !DIR & !AMT2 & !AMT1 &  AMT0 & A2
+   # !DIR & !AMT2 &  AMT1 & !AMT0 & A3
+   # !DIR & !AMT2 &  AMT1 &  AMT0 & A4
+   # !DIR &  AMT2 & !AMT1 & !AMT0 & A5
+   # !DIR &  AMT2 & !AMT1 &  AMT0 & A6
+   # !DIR &  AMT2 &  AMT1 & !AMT0 & A7;
+
+/* S2: right-shift sources A[2+N] (N=0..5), left-shift A[2-N] (N=0..2) */
+S2 = !AMT2 & !AMT1 & !AMT0 & A2
+   #  DIR & !AMT2 & !AMT1 &  AMT0 & A1
+   #  DIR & !AMT2 &  AMT1 & !AMT0 & A0
+   # !DIR & !AMT2 & !AMT1 &  AMT0 & A3
+   # !DIR & !AMT2 &  AMT1 & !AMT0 & A4
+   # !DIR & !AMT2 &  AMT1 &  AMT0 & A5
+   # !DIR &  AMT2 & !AMT1 & !AMT0 & A6
+   # !DIR &  AMT2 & !AMT1 &  AMT0 & A7;
+
+/* S3: right-shift sources A[3+N] (N=0..4), left-shift A[3-N] (N=0..3) */
+S3 = !AMT2 & !AMT1 & !AMT0 & A3
+   #  DIR & !AMT2 & !AMT1 &  AMT0 & A2
+   #  DIR & !AMT2 &  AMT1 & !AMT0 & A1
+   #  DIR & !AMT2 &  AMT1 &  AMT0 & A0
+   # !DIR & !AMT2 & !AMT1 &  AMT0 & A4
+   # !DIR & !AMT2 &  AMT1 & !AMT0 & A5
+   # !DIR & !AMT2 &  AMT1 &  AMT0 & A6
+   # !DIR &  AMT2 & !AMT1 & !AMT0 & A7;
+
+/* Zero detect for low nibble */
+SZLO = !S0 & !S1 & !S2 & !S3;

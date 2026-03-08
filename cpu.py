@@ -283,6 +283,119 @@ class CPU:
         c.add_component(IC74573("SPL_BUF",
             self.sp_l_int, self.data_bus, vcc, self.assert_out[6]))
 
+        # === ALU (5x GAL22V10 + 2x 74573 + 1x 74574) ===
+        # Operation select: 000=A, 001=B, 010=ADD, 011=SUB,
+        #                    100=AND, 101=OR, 110=XOR, 111=SHIFT
+        self.alu_op = [c.create_net(f"ALU_OP{i}") for i in range(3)]
+        for op in self.alu_op:
+            op.drive("ctrl", DriveState.LOW)
+
+        # Internal result buses
+        self.alu_r = [c.create_net(f"ALU_R{i}") for i in range(8)]
+        self.alu_s = [c.create_net(f"ALU_S{i}") for i in range(8)]
+
+        # Carry chain and zero detect
+        alu_c4 = c.create_net("ALU_C4")
+        alu_c8 = c.create_net("ALU_C8")
+        alu_zlo = c.create_net("ALU_ZLO")
+        alu_zhi = c.create_net("ALU_ZHI")
+        alu_szlo = c.create_net("ALU_SZLO")
+        alu_szhi = c.create_net("ALU_SZHI")
+
+        # GAL_ALU_LO: A[0..3] op B[0..3] -> R[0..3], C4, ZLO
+        c.add_component(GAL22V10("GAL_ALU_LO",
+            _load_pld("alu_lo.pld"), {
+                "A0": self.a_out[0], "A1": self.a_out[1],
+                "A2": self.a_out[2], "A3": self.a_out[3],
+                "B0": self.b_out[0], "B1": self.b_out[1],
+                "B2": self.b_out[2], "B3": self.b_out[3],
+                "OP0": self.alu_op[0], "OP1": self.alu_op[1],
+                "OP2": self.alu_op[2],
+                "R0": self.alu_r[0], "R1": self.alu_r[1],
+                "R2": self.alu_r[2], "R3": self.alu_r[3],
+                "C4": alu_c4, "ZLO": alu_zlo,
+            }))
+
+        # GAL_ALU_HI: A[4..7] op B[4..7] + C4 -> R[4..7], C8, ZHI
+        c.add_component(GAL22V10("GAL_ALU_HI",
+            _load_pld("alu_hi.pld"), {
+                "C4IN": alu_c4,
+                "A4": self.a_out[4], "A5": self.a_out[5],
+                "A6": self.a_out[6], "A7": self.a_out[7],
+                "B4": self.b_out[4], "B5": self.b_out[5],
+                "B6": self.b_out[6], "B7": self.b_out[7],
+                "OP0": self.alu_op[0], "OP1": self.alu_op[1],
+                "OP2": self.alu_op[2],
+                "R4": self.alu_r[4], "R5": self.alu_r[5],
+                "R6": self.alu_r[6], "R7": self.alu_r[7],
+                "C8": alu_c8, "ZHI": alu_zhi,
+            }))
+
+        # GAL_SHIFT_LO: barrel shift A by B[0..2], dir B[3] -> S[0..3], SZLO
+        c.add_component(GAL22V10("GAL_SHIFT_LO",
+            _load_pld("shift_lo.pld"), {
+                "A0": self.a_out[0], "A1": self.a_out[1],
+                "A2": self.a_out[2], "A3": self.a_out[3],
+                "A4": self.a_out[4], "A5": self.a_out[5],
+                "A6": self.a_out[6], "A7": self.a_out[7],
+                "AMT0": self.b_out[0], "AMT1": self.b_out[1],
+                "AMT2": self.b_out[2], "DIR": self.b_out[3],
+                "S0": self.alu_s[0], "S1": self.alu_s[1],
+                "S2": self.alu_s[2], "S3": self.alu_s[3],
+                "SZLO": alu_szlo,
+            }))
+
+        # GAL_SHIFT_HI: barrel shift A by B[0..2], dir B[3] -> S[4..7], SZHI
+        c.add_component(GAL22V10("GAL_SHIFT_HI",
+            _load_pld("shift_hi.pld"), {
+                "A0": self.a_out[0], "A1": self.a_out[1],
+                "A2": self.a_out[2], "A3": self.a_out[3],
+                "A4": self.a_out[4], "A5": self.a_out[5],
+                "A6": self.a_out[6], "A7": self.a_out[7],
+                "AMT0": self.b_out[0], "AMT1": self.b_out[1],
+                "AMT2": self.b_out[2], "DIR": self.b_out[3],
+                "S4": self.alu_s[4], "S5": self.alu_s[5],
+                "S6": self.alu_s[6], "S7": self.alu_s[7],
+                "SZHI": alu_szhi,
+            }))
+
+        # GAL_ALU_FLAGS: OE generation + flag computation
+        alu_arith_oe = c.create_net("ALU_ARITH_OE")
+        alu_shift_oe = c.create_net("ALU_SHIFT_OE")
+        self.flag_z = c.create_net("FLAG_Z")
+        self.flag_n = c.create_net("FLAG_N")
+        self.flag_c = c.create_net("FLAG_C")
+
+        c.add_component(GAL22V10("GAL_ALU_FLAGS",
+            _load_pld("alu_flags.pld"), {
+                "OP0": self.alu_op[0], "OP1": self.alu_op[1],
+                "OP2": self.alu_op[2],
+                "ASEN": self.assert_out[1],
+                "C8": alu_c8,
+                "ZLO": alu_zlo, "ZHI": alu_zhi,
+                "SZLO": alu_szlo, "SZHI": alu_szhi,
+                "R7": self.alu_r[7], "S7": self.alu_s[7],
+                "ALU_OE": alu_arith_oe,
+                "SH_OE": alu_shift_oe,
+                "FZ": self.flag_z, "FN": self.flag_n, "FC": self.flag_c,
+            }))
+
+        # ALU output buffers to data bus
+        c.add_component(IC74573("ALU_BUF",
+            self.alu_r, self.data_bus, vcc, alu_arith_oe))
+        c.add_component(IC74573("SHIFT_BUF",
+            self.alu_s, self.data_bus, vcc, alu_shift_oe))
+
+        # Flag register (74574): latches Z, N, C on FLAG_LATCH rising edge
+        self.flag_latch = c.create_net("FLAG_LATCH")
+        self.flag_latch.drive("ctrl", DriveState.LOW)  # idle low
+        flag_inputs = [self.flag_z, self.flag_n, self.flag_c,
+                       gnd, gnd, gnd, gnd, gnd]
+        self.flag_out = [c.create_net(f"FLAG_OUT{i}") for i in range(8)]
+        self.flag_reg = c.add_component(IC74574("FLAGS",
+            flag_inputs, self.flag_out,
+            self.flag_latch, gnd))
+
         # === Initialization: reset counters, then settle ===
         c.settle()
         self.pc_mr.drive("ctrl", DriveState.LOW)
@@ -332,6 +445,36 @@ class CPU:
 
     def read_arg(self):
         return self._read_nets(self.arg_out)
+
+    # ALU operations
+    ALU_A = 0     # 000: passthrough A
+    ALU_B = 1     # 001: passthrough B
+    ALU_ADD = 2   # 010: A + B
+    ALU_SUB = 3   # 011: A - B
+    ALU_AND = 4   # 100: A & B
+    ALU_OR = 5    # 101: A | B
+    ALU_XOR = 6   # 110: A ^ B
+    ALU_SHIFT = 7 # 111: shift A by B
+
+    def set_alu_op(self, op):
+        """Set ALU operation (0-7)."""
+        for i in range(3):
+            self.alu_op[i].drive("ctrl",
+                DriveState.HIGH if (op >> i) & 1 else DriveState.LOW)
+
+    def read_flags(self):
+        """Return (zero, negative, carry) from latched flag register."""
+        z = self.flag_out[0].value == Signal.HIGH
+        n = self.flag_out[1].value == Signal.HIGH
+        c = self.flag_out[2].value == Signal.HIGH
+        return z, n, c
+
+    def pulse_flag_latch(self):
+        """Latch current ALU flags into the flag register."""
+        self.flag_latch.drive("ctrl", DriveState.HIGH)
+        self.settle()
+        self.flag_latch.drive("ctrl", DriveState.LOW)
+        self.settle()
 
     def set_offset_ctrl(self, mode):
         """Set offset mode: 0=passthrough, 1=ARG, 2=ARG+1."""
