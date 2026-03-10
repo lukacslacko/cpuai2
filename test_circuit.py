@@ -2,7 +2,7 @@ import pytest
 from circuit import (
     Signal, DriveState, DoubleDriveError,
     Net, Circuit, LED, Switch, IC74573, IC74574, IC74138, IC40193,
-    IC62256, IC28256,
+    IC62256, IC28256, GAL22V10,
 )
 
 
@@ -867,3 +867,150 @@ class TestIntegration:
         c.settle()
 
         assert read_leds() == 0xBE
+
+
+# --- GAL22V10 6-bit adder tests ---
+
+class TestAdder6:
+    PLD_PATH = "gal/adder6.pld"
+
+    def make_adder(self):
+        with open(self.PLD_PATH) as f:
+            pld_source = f.read()
+        c = Circuit()
+        pins = {}
+        # Input nets
+        for name in ["CIN",
+                      "A0", "A1", "A2", "A3", "A4", "A5",
+                      "B0", "B1", "B2", "B3", "B4", "B5"]:
+            pins[name] = c.create_net(name)
+        # Output nets (C1, C3 are intermediate carries routed through output pins)
+        for name in ["S0", "S1", "S2", "S3", "S4", "S5", "COUT", "C1", "C3"]:
+            pins[name] = c.create_net(name)
+        gal = GAL22V10("ADDER6", pld_source, pins)
+        c.add_component(gal)
+        # Default: all inputs low
+        for name in ["CIN",
+                      "A0", "A1", "A2", "A3", "A4", "A5",
+                      "B0", "B1", "B2", "B3", "B4", "B5"]:
+            pins[name].drive("test", DriveState.LOW)
+        c.settle()
+        return c, pins
+
+    def set_a(self, pins, val):
+        for i in range(6):
+            pins[f"A{i}"].drive("test", DriveState.HIGH if (val >> i) & 1 else DriveState.LOW)
+
+    def set_b(self, pins, val):
+        for i in range(6):
+            pins[f"B{i}"].drive("test", DriveState.HIGH if (val >> i) & 1 else DriveState.LOW)
+
+    def set_cin(self, pins, val):
+        pins["CIN"].drive("test", DriveState.HIGH if val else DriveState.LOW)
+
+    def read_sum(self, pins):
+        val = 0
+        for i in range(6):
+            if pins[f"S{i}"].value == Signal.HIGH:
+                val |= (1 << i)
+        return val
+
+    def read_cout(self, pins):
+        return 1 if pins["COUT"].value == Signal.HIGH else 0
+
+    def test_zero_plus_zero(self):
+        c, pins = self.make_adder()
+        assert self.read_sum(pins) == 0
+        assert self.read_cout(pins) == 0
+
+    def test_one_plus_one(self):
+        c, pins = self.make_adder()
+        self.set_a(pins, 1)
+        self.set_b(pins, 1)
+        c.settle()
+        assert self.read_sum(pins) == 2
+        assert self.read_cout(pins) == 0
+
+    def test_carry_in(self):
+        c, pins = self.make_adder()
+        self.set_a(pins, 0)
+        self.set_b(pins, 0)
+        self.set_cin(pins, 1)
+        c.settle()
+        assert self.read_sum(pins) == 1
+        assert self.read_cout(pins) == 0
+
+    def test_max_plus_zero(self):
+        """63 + 0 = 63, no carry."""
+        c, pins = self.make_adder()
+        self.set_a(pins, 63)
+        c.settle()
+        assert self.read_sum(pins) == 63
+        assert self.read_cout(pins) == 0
+
+    def test_max_plus_one_overflow(self):
+        """63 + 1 = 0 with carry out."""
+        c, pins = self.make_adder()
+        self.set_a(pins, 63)
+        self.set_b(pins, 1)
+        c.settle()
+        assert self.read_sum(pins) == 0
+        assert self.read_cout(pins) == 1
+
+    def test_max_plus_max(self):
+        """63 + 63 = 126 -> sum=62, carry=1."""
+        c, pins = self.make_adder()
+        self.set_a(pins, 63)
+        self.set_b(pins, 63)
+        c.settle()
+        assert self.read_sum(pins) == 62
+        assert self.read_cout(pins) == 1
+
+    def test_max_plus_max_plus_cin(self):
+        """63 + 63 + 1 = 127 -> sum=63, carry=1."""
+        c, pins = self.make_adder()
+        self.set_a(pins, 63)
+        self.set_b(pins, 63)
+        self.set_cin(pins, 1)
+        c.settle()
+        assert self.read_sum(pins) == 63
+        assert self.read_cout(pins) == 1
+
+    def test_carry_propagation(self):
+        """31 + 1 = 32: carry ripples through bits 0-4."""
+        c, pins = self.make_adder()
+        self.set_a(pins, 31)  # 011111
+        self.set_b(pins, 1)   # 000001
+        c.settle()
+        assert self.read_sum(pins) == 32  # 100000
+        assert self.read_cout(pins) == 0
+
+    def test_exhaustive_no_carry_in(self):
+        """Test all 64x64 input combinations without carry in."""
+        c, pins = self.make_adder()
+        self.set_cin(pins, 0)
+        for a in range(64):
+            self.set_a(pins, a)
+            for b in range(64):
+                self.set_b(pins, b)
+                c.settle()
+                expected = a + b
+                assert self.read_sum(pins) == expected & 0x3F, \
+                    f"a={a} b={b}: sum expected {expected & 0x3F}, got {self.read_sum(pins)}"
+                assert self.read_cout(pins) == (1 if expected >= 64 else 0), \
+                    f"a={a} b={b}: cout expected {1 if expected >= 64 else 0}, got {self.read_cout(pins)}"
+
+    def test_exhaustive_with_carry_in(self):
+        """Test all 64x64 input combinations with carry in."""
+        c, pins = self.make_adder()
+        self.set_cin(pins, 1)
+        for a in range(64):
+            self.set_a(pins, a)
+            for b in range(64):
+                self.set_b(pins, b)
+                c.settle()
+                expected = a + b + 1
+                assert self.read_sum(pins) == expected & 0x3F, \
+                    f"a={a} b={b} cin=1: sum expected {expected & 0x3F}, got {self.read_sum(pins)}"
+                assert self.read_cout(pins) == (1 if expected >= 64 else 0), \
+                    f"a={a} b={b} cin=1: cout expected {1 if expected >= 64 else 0}, got {self.read_cout(pins)}"
