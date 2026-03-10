@@ -276,6 +276,116 @@ minipro -p 28256 -w microcode_hi.bin
 
 Label the chips UCODE_LO and UCODE_HI to match the circuit.
 
+## Netlist DSL
+
+The `netlist.py` module provides a text-based language for wiring up
+circuits declaratively, as an alternative to writing Python wiring code
+by hand.
+
+### Quick example
+
+```python
+from netlist import Netlist
+
+n = Netlist("""
+    GND[] = LOW
+    VCC[] = HIGH
+
+    DATA[8]
+    A_OUT[8]
+
+    A(74574)
+    A.D[0:7] - DATA[0:7]
+    A.Q[0:7] - A_OUT[0:7]
+    A.CLK - GND
+    A.OE - GND
+
+    ADDER(adder6.pld)
+    ADDER.A[0:5] - DATA[0:5]
+    ADDER.B[0:5] - A_OUT[0:5]
+    ADDER.CIN - GND
+    ADDER.S[0:5] - NC
+    ADDER.COUT - NC
+    ADDER.C1 - NC
+    ADDER.C3 - NC
+""")
+
+n.settle()
+n.drive_bus('DATA', 8, 0x42)
+n.settle()
+print(n.read_bus('A_OUT', 8))
+```
+
+### Syntax reference
+
+Each line is one statement. Blank lines and `# comments` are ignored.
+
+#### Chip declarations
+
+| Syntax | Description |
+|--------|-------------|
+| `NAME(type)` | Create a chip instance |
+
+Supported types: `40193`, `74573`, `74574`, `74138`, `62256`, `28256`,
+`inverter`, `led`, or a `.pld` filename for GAL22V10 (loaded from `gal/`).
+
+#### Wire declarations
+
+| Syntax | Description |
+|--------|-------------|
+| `NAME[]` | Single wire (floating) |
+| `NAME[] = HIGH` | Permanently driven HIGH |
+| `NAME[] = LOW` | Permanently driven LOW |
+| `NAME[] = PULLUP` | Pull-up (HIGH when undriven) |
+| `NAME[N]` | Bus of N wires: NAME0, NAME1, ..., NAME(N-1) |
+| `NAME[N] = LOW` | Driven bus |
+
+#### Connections
+
+| Syntax | Description |
+|--------|-------------|
+| `CHIP.PIN - WIRE` | Connect a pin to a wire |
+| `CHIP.X[a:b] - W[c:d]` | Bus connection (inclusive ranges, same width) |
+| `NAME[CHIP.PIN, CHIP2.PIN]` | Create wire and connect pins in one line |
+| `[CHIP.PIN, CHIP2.PIN]` | Anonymous wire (auto-named) |
+| `CHIP.PIN - NC` | Mark pin as intentionally not connected |
+| `CHIP.X[a:b] - NC` | Mark bus of pins as not connected |
+
+All pins of every chip must be either connected to a wire or marked NC.
+Forgetting a pin is a build error.
+
+Individual bus wires are named `PREFIX` + `INDEX`, e.g. `DATA[8]`
+creates `DATA0` through `DATA7`. To connect a single bus wire, use the
+full name: `LED0.A - DATA0` (not `DATA[0]`).
+
+#### Pin names per chip type
+
+| Type | Pins |
+|------|------|
+| `40193` | D0-D3, Q0-Q3, CPU, CPD, PL, MR, TCU, TCD |
+| `74573` | D0-D7, Q0-Q7, LE, OE |
+| `74574` | D0-D7, Q0-Q7, CLK, OE |
+| `74138` | A, B, C, G1, G2A, G2B, Y0-Y7 |
+| `62256` | A0-A14, D0-D7, CE, OE, WE |
+| `28256` | A0-A14, D0-D7, CE, OE |
+| `inverter` | IN, OUT |
+| `led` | A |
+| `*.pld` | Pin names from PLD file |
+
+### Python API
+
+| Method | Description |
+|--------|-------------|
+| `n.wire('NAME')` | Get a single `Net` by name |
+| `n.bus('PREFIX', N)` | Get list of N nets: PREFIX0..PREFIX(N-1) |
+| `n.read_bus('PREFIX', N)` | Read N-bit bus as unsigned int (bit 0 = PREFIX0) |
+| `n.drive_bus('PREFIX', N, val)` | Drive N-bit bus from unsigned int |
+| `n.chip('NAME')` | Get a component by name |
+| `n.settle()` | Run simulation until stable |
+| `n.circuit` | The underlying `Circuit` object |
+| `n.nets` | Dict of all `Net` objects by name |
+| `n.chips` | Dict of all components by name |
+
 ## Build Instructions
 
 The file [`BUILD.md`](BUILD.md) contains the full component list and
